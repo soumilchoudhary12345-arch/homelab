@@ -1,0 +1,19 @@
+[Unit]
+Description=picloud web cloud
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=soumil
+Group=soumil
+WorkingDirectory=/home/soumil/cloudapp
+Environment=CLOUD_ROOT=/home/soumil/cloud
+Environment=CLOUD_PORT=80
+ExecStart=/usr/bin/python3 /home/soumil/cloudapp/app.py
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

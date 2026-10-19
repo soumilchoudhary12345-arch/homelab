@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b0f19">
+<title>{{TITLE}} &middot; {{ARTIST}}</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main class="player">
+  <div class="art">
+    <img src="/cover.jpg" alt="{{ALBUM}} cover">
+  </div>
+  <div class="meta">
+    <div class="title">{{TITLE}}</div>
+    <div class="artist">{{ARTIST}}</div>
+    <div class="album">{{ALBUM}}</div>
+  </div>
+
+  <div class="controls">
+    <button id="play" class="play" aria-label="Play">
+      <span class="icon-play">&#9654;</span>
+      <span class="icon-pause">&#10073;&#10073;</span>
+    </button>
+    <div class="bar">
+      <input id="seek" type="range" min="0" max="100" value="0" step="0.1" aria-label="Seek">
+      <div class="times">
+        <span id="cur">0:00</span>
+        <span id="dur">0:00</span>
+      </div>
+    </div>
+  </div>
+  <div class="hint">Streaming from the Raspberry Pi &middot; loads as it plays</div>
+</main>
+
+<audio id="player" src="/track" preload="none"></audio>
+
+<script>
+var audio = document.getElementById("player");
+var play = document.getElementById("play");
+var seek = document.getElementById("seek");
+var cur = document.getElementById("cur");
+var dur = document.getElementById("dur");
+var dragging = false;
+
+function fmt(s){
+  if(!isFinite(s) || s < 0) return "0:00";
+  var m = Math.floor(s / 60), ss = Math.floor(s % 60);
+  return m + ":" + (ss < 10 ? "0" : "") + ss;
+}
+
+play.onclick = function(){
+  if(audio.paused){ audio.play(); } else { audio.pause(); }
+};
+audio.onplay = function(){ play.classList.add("playing"); };
+audio.onpause = function(){ play.classList.remove("playing"); };
+audio.onended = function(){ play.classList.remove("playing"); };
+audio.onloadedmetadata = function(){
+  dur.textContent = fmt(audio.duration);
+  seek.max = audio.duration || 100;
+};
+audio.ontimeupdate = function(){
+  if(!dragging) seek.value = audio.currentTime;
+  cur.textContent = fmt(audio.currentTime);
+};
+seek.addEventListener("input", function(){
+  dragging = true;
+  cur.textContent = fmt(parseFloat(seek.value));
+});
+seek.addEventListener("change", function(){
+  audio.currentTime = parseFloat(seek.value);
+  dragging = false;
+});
+</script>
+</body>
+</html>
