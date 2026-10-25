@@ -1,0 +1,4 @@
+# Never publish the bundled track to the public archive repo.
+songpage/track.mp3
+__pycache__/
+*.pyc

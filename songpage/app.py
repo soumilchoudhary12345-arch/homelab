@@ -9,11 +9,18 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TRACK = os.environ.get("TRACK_FILE", "/home/soumil/music/aria-math.mp3")
+BUNDLED = os.path.join(HERE, "track.mp3")
+TRACK = os.environ.get(
+    "TRACK_FILE",
+    BUNDLED if os.path.isfile(BUNDLED) else "/home/soumil/music/aria-math.mp3",
+)
 COVER = os.path.join(HERE, "cover.jpg")
 INDEX = os.path.join(HERE, "index.html")
 CSS = os.path.join(HERE, "style.css")
-PORT = int(os.environ.get("PLAYER_PORT", "8080"))
+FONTS_CSS = os.path.join(HERE, "fonts.css")
+FONTS_DIR = os.path.join(HERE, "fonts")
+FAVICON = os.path.join(HERE, "favicon.svg")
+PORT = int(os.environ.get("PLAYER_PORT") or os.environ.get("PORT") or "8080")
 BIND = os.environ.get("PLAYER_BIND", "0.0.0.0")
 CHUNK = 1 << 16
 
@@ -128,6 +135,16 @@ class Handler(BaseHTTPRequestHandler):
             self._small(200, "text/html; charset=utf-8", read_index().encode())
         elif p == "/style.css":
             self._send_file(CSS, "text/css; charset=utf-8")
+        elif p == "/fonts.css":
+            self._send_file(FONTS_CSS, "text/css; charset=utf-8")
+        elif p == "/favicon.svg":
+            self._send_file(FAVICON, "image/svg+xml")
+        elif p.startswith("/fonts/"):
+            name = os.path.basename(urllib.parse.unquote(p))
+            if not name.endswith(".woff2") or "/" in name:
+                self._small(404, "text/plain; charset=utf-8", b"not found")
+            else:
+                self._send_file(os.path.join(FONTS_DIR, name), "font/woff2")
         elif p == "/cover.jpg":
             self._send_file(COVER, "image/jpeg")
         elif p == "/track":
@@ -141,6 +158,12 @@ class Handler(BaseHTTPRequestHandler):
             self._stream_track(head_only=True)
         elif p == "/cover.jpg":
             self._send_file(COVER, "image/jpeg", head_only=True)
+        elif p == "/style.css":
+            self._send_file(CSS, "text/css; charset=utf-8", head_only=True)
+        elif p == "/fonts.css":
+            self._send_file(FONTS_CSS, "text/css; charset=utf-8", head_only=True)
+        elif p == "/favicon.svg":
+            self._send_file(FAVICON, "image/svg+xml", head_only=True)
         elif p in ("/", "/index.html"):
             self._small(200, "text/html; charset=utf-8", b"")
         else:
