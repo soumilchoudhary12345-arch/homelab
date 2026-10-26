@@ -16,6 +16,7 @@ What it does:
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import urllib.request
@@ -89,7 +90,8 @@ def main():
     print("Folders to sync:", ", ".join(f[2] for f in fl))
 
     payload = json.dumps({"pc_id": my_id, "device": device, "folders": [(f[0], f[1], f[3]) for f in fl]})
-    r = subprocess.run(["ssh", PI_SSH, "python3", "-c", PI_SIDE], input=payload.encode(), capture_output=True)
+    # ssh joins its arguments into one remote shell command, so quote the script as a single word.
+    r = subprocess.run(["ssh", PI_SSH, "python3 -c " + shlex.quote(PI_SIDE)], input=payload.encode(), capture_output=True)
     if r.returncode != 0:
         raise SystemExit("Pi side failed:\n" + r.stderr.decode())
     pi_id = r.stdout.decode().strip().splitlines()[-1]
