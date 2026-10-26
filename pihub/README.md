@@ -8,7 +8,8 @@ The homelab's coordinator on the Raspberry Pi (`piscreen`, 192.168.1.13, port **
 | `deploy/pihub-sync.timer` | Pi | Daily 02:00 check; queues a sync for every PC once 4 days have passed |
 | `client/pihub_client.py` | each PC | Polls PiHub; runs syncs, sends requested files, saves fetched files |
 | `client/pihub_mcp.py` | each PC | MCP tools for agents: `list_devices`, `search_files`, `request_file`, `task_status`, `sync_now` |
-| `client/report_event.py` | each PC | Agent hook → `/agents` monitor (tool name + short summary only) |
+| `client/report_event.py` | each PC | Agent hook → `/agents` monitor (tool name + short summary only); normalises every agent's events, fields and tool names |
+| `client/connect_agents.py` | each PC | Hooks up every installed agent: Claude Code, Codex, Copilot CLI, Crush, OpenCode (plugin), Gemini CLI + Antigravity. Safe to rerun after installing a new agent |
 | `setup/pair_syncthing.py` | each PC, once | Pairs Syncthing with the Pi and creates the folders |
 | `pi.html` + `pi.js`/`pi.css` (`/pi`) | Pi touchscreen, `deploy/agents.desktop` | **Agents** app: tap a PC to see what its agents are doing, plus its live storage on the Pi; refreshes every 2 s |
 

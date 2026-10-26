@@ -64,6 +64,7 @@ JOIN_FILES = {
     "pihub_client.py": "client/pihub_client.py",
     "pihub_mcp.py": "client/pihub_mcp.py",
     "report_event.py": "client/report_event.py",
+    "connect_agents.py": "client/connect_agents.py",
     "pair_syncthing.py": "setup/pair_syncthing.py",
     "pihub-client.service": "client/linux/pihub-client.service",
     "pihub-sync-fallback.service": "client/linux/pihub-sync-fallback.service",
@@ -371,7 +372,9 @@ def add_event(body):
 
 
 AGENT_NAMES = {"claude-code": "Claude Code", "opencode": "OpenCode", "copilot": "Copilot CLI",
-               "antigravity": "Antigravity"}
+               "antigravity": "Antigravity", "codex": "Codex", "crush": "Crush", "gemini": "Gemini CLI"}
+# Agents whose hooks can't say "finished" (Crush 0.97 only has PreToolUse): call them quiet sooner.
+QUIET_AFTER = {"crush": 120}
 TOOL_PHRASES = {
     "Read": "Reading {s}", "Edit": "Editing {s}", "MultiEdit": "Editing {s}", "Write": "Writing {s}",
     "NotebookEdit": "Editing the notebook {s}", "Grep": "Searching the code for \u201c{s}\u201d",
@@ -441,7 +444,7 @@ def agent_sessions():
         age = now() - r["ts"]
         if ev in ("SessionEnd",):
             state = "ended"
-        elif ev in ("Stop", "SubagentStop") or age > 600:
+        elif ev in ("Stop", "SubagentStop") or age > QUIET_AFTER.get(r["agent"], 600):
             state = "idle"
         elif ev == "Notification":
             state = "waiting"

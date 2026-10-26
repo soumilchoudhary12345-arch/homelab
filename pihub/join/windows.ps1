@@ -69,7 +69,7 @@ Write-Host "Syncthing: $st"
 
 Say "3/7 Downloading the PiHub client"
 New-Item -ItemType Directory -Force -Path $App, $CfgDir | Out-Null
-foreach ($f in @("pihub_client.py", "pihub_mcp.py", "report_event.py", "pair_syncthing.py")) {
+foreach ($f in @("pihub_client.py", "pihub_mcp.py", "report_event.py", "connect_agents.py", "pair_syncthing.py")) {
   Invoke-WebRequest "$Hub/join/$f" -OutFile (Join-Path $App $f) -UseBasicParsing
 }
 
@@ -127,35 +127,8 @@ Say "6/7 Pairing with the Pi"
 & $py (Join-Path $App "pair_syncthing.py")
 if ($LASTEXITCODE -ne 0) { Die "Pairing failed (see above)." }
 
-Say "7/7 Agent monitor: hooks, agent tools and the 'Pi Agents' app"
-$hookScript = @'
-import json, os, sys
-p = os.path.expanduser("~/.claude/settings.json")
-try:
-    d = json.load(open(p, encoding="utf-8"))
-except FileNotFoundError:
-    d = {}
-except ValueError:
-    sys.exit("Skipped Claude Code hooks: %s isn't valid JSON." % p)
-cmd = '"%s" "%s" --agent claude-code' % (sys.argv[1], sys.argv[2])
-hooks = d.setdefault("hooks", {})
-added = 0
-for name in ("SessionStart", "PreToolUse", "Notification", "Stop"):
-    groups = hooks.setdefault(name, [])
-    if any("report_event.py" in h.get("command", "") for g in groups for h in g.get("hooks", [])):
-        continue
-    g = {"hooks": [{"type": "command", "command": cmd, "timeout": 5}]}
-    if name == "PreToolUse":
-        g = {"matcher": "*", **g}
-    groups.append(g)
-    added += 1
-os.makedirs(os.path.dirname(p), exist_ok=True)
-json.dump(d, open(p, "w", encoding="utf-8"), indent=2)
-print("Claude Code hooks:", "added" if added else "already there")
-'@
-$hookFile = Join-Path $App "add_hooks.py"
-[IO.File]::WriteAllText($hookFile, $hookScript, (New-Object Text.UTF8Encoding $false))
-& $py $hookFile $py (Join-Path $App "report_event.py")
+Say "7/7 Agent monitor: connect every coding agent, agent tools and the 'Pi Agents' app"
+& $py (Join-Path $App "connect_agents.py")
 
 if (Get-Command claude -ErrorAction SilentlyContinue) {
   claude mcp get pihub *> $null

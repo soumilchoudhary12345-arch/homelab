@@ -40,7 +40,7 @@ fi
 
 say "3/7 Downloading the PiHub client"
 mkdir -p "$APP" "$CFG" "$UNITS"
-for f in pihub_client.py pihub_mcp.py report_event.py pair_syncthing.py favicon.svg; do
+for f in pihub_client.py pihub_mcp.py report_event.py connect_agents.py pair_syncthing.py favicon.svg; do
   curl -fsS "$HUB/join/$f" -o "$APP/$f"
 done
 for f in pihub-client.service pihub-sync-fallback.service pihub-sync-fallback.timer; do
@@ -88,32 +88,8 @@ echo
 say "6/7 Pairing with the Pi"
 python3 "$APP/pair_syncthing.py"
 
-say "7/7 Agent monitor: hooks, agent tools and the 'Pi Agents' app"
-python3 - "$APP/report_event.py" <<'PY'
-import json, os, sys
-p = os.path.expanduser("~/.claude/settings.json")
-try:
-    d = json.load(open(p))
-except FileNotFoundError:
-    d = {}
-except ValueError:
-    sys.exit("Skipped Claude Code hooks: %s isn't valid JSON." % p)
-cmd = "python3 %s --agent claude-code" % sys.argv[1]
-hooks = d.setdefault("hooks", {})
-added = 0
-for name in ("SessionStart", "PreToolUse", "Notification", "Stop"):
-    groups = hooks.setdefault(name, [])
-    if any("report_event.py" in h.get("command", "") for g in groups for h in g.get("hooks", [])):
-        continue
-    g = {"hooks": [{"type": "command", "command": cmd, "timeout": 5}]}
-    if name == "PreToolUse":
-        g = {"matcher": "*", **g}
-    groups.append(g)
-    added += 1
-os.makedirs(os.path.dirname(p), exist_ok=True)
-json.dump(d, open(p, "w"), indent=2)
-print("Claude Code hooks:", "added" if added else "already there")
-PY
+say "7/7 Agent monitor: connect every coding agent, agent tools and the 'Pi Agents' app"
+python3 "$APP/connect_agents.py"
 if command -v claude >/dev/null; then
   if claude mcp get pihub >/dev/null 2>&1; then echo "Claude Code PiHub tools: already there"
   else claude mcp add pihub -s user -- python3 "$APP/pihub_mcp.py" >/dev/null && echo "Claude Code PiHub tools: added"; fi
