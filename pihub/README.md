@@ -35,9 +35,11 @@ pihub-client (runs at login, plus the 4-day fallback), pairs Syncthing with the 
   `cloud` folder). Windows: double-click it. Linux: `bash join-pi.cmd`. It's a batch/bash polyglot:
   cmd skips the `:;` lines as labels; bash runs them and exits before the Windows part. Keep it LF-only.
 
-The Pi names each PC after its user (`soumil`, then `soumil-2`, `soumil-3`), remembered by
+The Pi names each PC `<user>_<os>`, like `soumil_win` or `soumil_linux`. A number is added only
+when that exact name is taken: the second Windows PC of `soumil` becomes `soumil_win_2` (the first
+keeps its name, because its synced folders on the Pi are stored under it). Names are remembered by
 machine ID, so running the script again keeps the name. To choose a name instead:
-`bash join-pi.sh my-laptop`, or on Windows `$env:PIHUB_DEVICE = "my-pc"` first.
+`bash join-pi.sh my_laptop`, or on Windows `$env:PIHUB_DEVICE = "my_pc"` first.
 
 The scripts are served with the token filled in, and `/join/*` needs no token, so anyone on the
 LAN can fetch the token. That's accepted here because the Pi's firewall only allows the home LAN.

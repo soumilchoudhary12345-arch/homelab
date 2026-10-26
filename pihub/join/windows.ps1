@@ -2,8 +2,8 @@
 # PiHub serves this file with its address and token filled in. In PowerShell:
 #   irm http://192.168.1.13:8899/join/windows.ps1 | iex
 # or save it and run:  powershell -ExecutionPolicy Bypass -File windows.ps1
-# The Pi names this PC after your user (soumil, soumil-2, ...). To pick your own
-# name, first run:  $env:PIHUB_DEVICE = "my-pc"
+# The Pi names this PC <user>_win (soumil_win, then soumil_win_2 for a duplicate).
+# To pick your own name, first run:  $env:PIHUB_DEVICE = "my_pc"
 # Safe to run again: it keeps an existing config and only adds what's missing.
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -80,10 +80,10 @@ if (Test-Path $CfgFile) {
 } else {
   $Device = $env:PIHUB_DEVICE
   if ($Device) {
-    if ($Device -notmatch '^[a-z0-9][a-z0-9-]{0,31}$') { Die "Bad device name '$Device'. Use lowercase letters, digits and dashes." }
+    if ($Device -cnotmatch '^[a-z0-9][a-z0-9_-]{0,39}$') { Die "Bad device name '$Device'. Use lowercase letters, digits, dashes and underscores." }
   } else {
     $machine = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Cryptography").MachineGuid
-    $body = @{ user = $env:USERNAME; machine = $machine } | ConvertTo-Json
+    $body = @{ user = $env:USERNAME; os = "win"; machine = $machine } | ConvertTo-Json
     $Device = (Invoke-RestMethod "$Hub/api/register" -Method Post -Headers $Headers -ContentType "application/json" -Body $body).device
   }
   $cfg = [ordered]@{

@@ -107,29 +107,37 @@ class Join(unittest.TestCase):
     def setUp(self):
         reset()
 
-    def test_name_is_the_user_then_numbered(self):
-        a = app.register_device({"user": "Soumil", "machine": "a" * 32})
-        b = app.register_device({"user": "soumil", "machine": "b" * 32})
-        c = app.register_device({"user": "soumil", "machine": "c" * 32})
-        self.assertEqual([a["device"], b["device"], c["device"]], ["soumil", "soumil-2", "soumil-3"])
+    def reg(self, user, os_, m):
+        return app.register_device({"user": user, "os": os_, "machine": m * 32})["device"]
+
+    def test_name_is_user_and_os(self):
+        self.assertEqual(self.reg("Soumil", "win", "a"), "soumil_win")
+        self.assertEqual(self.reg("soumil", "linux", "b"), "soumil_linux")
+
+    def test_number_only_for_a_duplicate(self):
+        self.assertEqual([self.reg("soumil", "win", m) for m in "abc"], ["soumil_win", "soumil_win_2", "soumil_win_3"])
+        self.assertEqual(self.reg("soumil", "linux", "d"), "soumil_linux")
+
+    def test_os_is_required(self):
+        with self.assertRaises(app.ClientError):
+            app.register_device({"user": "soumil", "os": "mac", "machine": "a" * 32})
 
     def test_same_machine_keeps_its_name(self):
-        first = app.register_device({"user": "soumil", "machine": "a" * 32})
-        again = app.register_device({"user": "someone-else", "machine": "A" * 32})
+        first = app.register_device({"user": "soumil", "os": "win", "machine": "a" * 32})
+        again = app.register_device({"user": "someone-else", "os": "win", "machine": "A" * 32})
         self.assertEqual(again, {"device": first["device"], "new": False})
 
     def test_odd_user_names_are_cleaned(self):
-        self.assertEqual(app.register_device({"user": "Soumil Choudhary!", "machine": "d" * 32})["device"],
-                         "soumil-choudhary")
-        self.assertEqual(app.register_device({"user": "日本", "machine": "e" * 32})["device"], "pc")
+        self.assertEqual(self.reg("Soumil Choudhary!", "win", "d"), "soumil-choudhary_win")
+        self.assertEqual(self.reg("日本", "linux", "e"), "pc_linux")
 
     def test_existing_device_folder_is_never_reused(self):
-        os.makedirs(os.path.join(app.DEVICES_DIR, "ravi"), exist_ok=True)
-        self.assertEqual(app.register_device({"user": "ravi", "machine": "f" * 32})["device"], "ravi-2")
+        os.makedirs(os.path.join(app.DEVICES_DIR, "ravi_linux"), exist_ok=True)
+        self.assertEqual(self.reg("ravi", "linux", "f"), "ravi_linux_2")
 
     def test_bad_machine_id_is_refused(self):
         with self.assertRaises(app.ClientError):
-            app.register_device({"user": "soumil", "machine": "../../etc"})
+            app.register_device({"user": "soumil", "os": "win", "machine": "../../etc"})
 
     def test_pair_refuses_bad_input_before_touching_syncthing(self):
         good_id = "-".join(["ABCDEFG"] * 8)

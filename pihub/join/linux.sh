@@ -2,7 +2,7 @@
 # Join this Linux PC to PiHub on the Raspberry Pi, in one run.
 # PiHub serves this file with its address and token filled in:
 #   curl -fsSL http://192.168.1.13:8899/join/linux.sh -o join-pi.sh && bash join-pi.sh
-# The Pi names this PC after your user (soumil, soumil-2, ...); pass a name to pick your own.
+# The Pi names this PC <user>_linux (soumil_linux, then soumil_linux_2 for a duplicate); pass a name to pick your own.
 # Safe to run again: it keeps an existing config and only adds what's missing.
 set -euo pipefail
 
@@ -17,8 +17,8 @@ say() { printf '\n\033[1;33m==> %s\033[0m\n' "$*"; }
 die() { printf '\033[1;31mError: %s\033[0m\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not root. It asks for sudo when it needs it."
-[ -z "$DEVICE" ] || [[ "$DEVICE" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] \
-  || die "Bad device name '$DEVICE'. Use lowercase letters, digits and dashes, like: bash join-pi.sh my-laptop"
+[ -z "$DEVICE" ] || [[ "$DEVICE" =~ ^[a-z0-9][a-z0-9_-]{0,39}$ ]] \
+  || die "Bad device name '$DEVICE'. Use lowercase letters, digits, dashes and underscores, like: bash join-pi.sh my_laptop"
 
 say "1/7 Checking the Pi at $HUB"
 command -v curl >/dev/null || die "curl is missing. Install it, then run this again."
@@ -55,7 +55,7 @@ else
   if [ -z "$DEVICE" ]; then
     MACHINE="$(cat /etc/machine-id 2>/dev/null || cat /var/lib/dbus/machine-id)"
     DEVICE="$(curl -fsS -H "X-Token: $TOKEN" -H "Content-Type: application/json" \
-      -d "{\"user\": \"${USER:-$(id -un)}\", \"machine\": \"$MACHINE\"}" "$HUB/api/register" \
+      -d "{\"user\": \"${USER:-$(id -un)}\", \"os\": \"linux\", \"machine\": \"$MACHINE\"}" "$HUB/api/register" \
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["device"])')" || die "The Pi couldn't name this PC."
   fi
   ( umask 077

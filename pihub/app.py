@@ -71,7 +71,7 @@ JOIN_SCRIPTS = {"linux.sh": "join/linux.sh", "windows.ps1": "join/windows.ps1", 
 
 # Folders a PC may share, and where the Pi keeps each one.
 PAIR_FOLDERS = ("Documents", "Desktop", "Pictures", "Videos", "Downloads", "Music")
-DEVICE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+DEVICE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 ST_ID_RE = re.compile(r"^[A-Z0-9]{7}(-[A-Z0-9]{7}){7}$")
 
 
@@ -128,7 +128,9 @@ def init_db():
 
 
 def register_device(body):
-    """Name a new PC after its user: soumil, then soumil-2, soumil-3 for the next PCs.
+    """Name a new PC <user>_<os>: soumil_win, soumil_linux. A number is added only
+    when that exact name is taken (soumil_win_2, soumil_win_3); the first PC keeps
+    its name, since its synced folders on the Pi are stored under it.
 
     The machine ID (Linux /etc/machine-id, Windows MachineGuid) makes it stable:
     running the join script again on the same PC gets the same name back.
@@ -136,7 +138,11 @@ def register_device(body):
     machine = str(body.get("machine") or "").strip().lower()
     if not re.match(r"^[a-z0-9-]{8,64}$", machine):
         raise ClientError("machine must be the PC's machine ID.")
-    base = re.sub(r"[^a-z0-9]+", "-", str(body.get("user") or "").lower()).strip("-")[:28] or "pc"
+    osname = body.get("os")
+    if osname not in ("win", "linux"):
+        raise ClientError("os must be win or linux.")
+    user = re.sub(r"[^a-z0-9]+", "-", str(body.get("user") or "").lower()).strip("-")[:28] or "pc"
+    base = user + "_" + osname
     with db() as c:
         row = c.execute("SELECT name FROM devices WHERE machine = ?", (machine,)).fetchone()
         if row:
@@ -146,7 +152,7 @@ def register_device(body):
         name, n = base, 1
         while name in taken:
             n += 1
-            name = "%s-%d" % (base, n)
+            name = "%s_%d" % (base, n)
         c.execute("INSERT INTO devices(name, last_seen, machine) VALUES (?, ?, ?)", (name, now(), machine))
     return {"device": name, "new": True}
 
@@ -398,7 +404,7 @@ def pair_device(body):
     """
     device, pc_id = body.get("device") or "", body.get("pc_id") or ""
     if not DEVICE_RE.match(device):
-        raise ClientError("Device name must be lowercase letters, digits and dashes (max 32).")
+        raise ClientError("Device name must be lowercase letters, digits, dashes and underscores (max 40).")
     if not ST_ID_RE.match(pc_id):
         raise ClientError("That isn't a Syncthing device ID.")
     wanted = body.get("folders") or []
