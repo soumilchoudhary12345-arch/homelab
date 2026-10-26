@@ -101,3 +101,49 @@ class Agents(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Join(unittest.TestCase):
+    def setUp(self):
+        reset()
+
+    def test_name_is_the_user_then_numbered(self):
+        a = app.register_device({"user": "Soumil", "machine": "a" * 32})
+        b = app.register_device({"user": "soumil", "machine": "b" * 32})
+        c = app.register_device({"user": "soumil", "machine": "c" * 32})
+        self.assertEqual([a["device"], b["device"], c["device"]], ["soumil", "soumil-2", "soumil-3"])
+
+    def test_same_machine_keeps_its_name(self):
+        first = app.register_device({"user": "soumil", "machine": "a" * 32})
+        again = app.register_device({"user": "someone-else", "machine": "A" * 32})
+        self.assertEqual(again, {"device": first["device"], "new": False})
+
+    def test_odd_user_names_are_cleaned(self):
+        self.assertEqual(app.register_device({"user": "Soumil Choudhary!", "machine": "d" * 32})["device"],
+                         "soumil-choudhary")
+        self.assertEqual(app.register_device({"user": "日本", "machine": "e" * 32})["device"], "pc")
+
+    def test_existing_device_folder_is_never_reused(self):
+        os.makedirs(os.path.join(app.DEVICES_DIR, "ravi"), exist_ok=True)
+        self.assertEqual(app.register_device({"user": "ravi", "machine": "f" * 32})["device"], "ravi-2")
+
+    def test_bad_machine_id_is_refused(self):
+        with self.assertRaises(app.ClientError):
+            app.register_device({"user": "soumil", "machine": "../../etc"})
+
+    def test_pair_refuses_bad_input_before_touching_syncthing(self):
+        good_id = "-".join(["ABCDEFG"] * 8)
+        for body in ({"device": "../x", "pc_id": good_id, "folders": []},
+                     {"device": "soumil", "pc_id": "nope", "folders": []},
+                     {"device": "soumil", "pc_id": good_id, "folders": ["/etc"]},
+                     {"device": "soumil", "pc_id": good_id, "folders": [".ssh"]}):
+            with self.assertRaises(app.ClientError):
+                app.pair_device(body)
+
+    def test_join_script_placeholders_exist(self):
+        for name in app.JOIN_SCRIPTS.values():
+            text = open(os.path.join(app.HERE, name), encoding="utf-8").read()
+            self.assertIn("__PIHUB_URL__", text)
+            self.assertIn("__PIHUB_TOKEN__", text)
+        for name in app.JOIN_FILES.values():
+            self.assertTrue(os.path.isfile(os.path.join(app.HERE, name)), name)

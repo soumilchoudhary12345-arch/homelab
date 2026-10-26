@@ -17,42 +17,27 @@ Token: `PIHUB_TOKEN` in `/etc/pihub.env` (root:som 640). Every `/api/*` call nee
 ## Deploy to the Pi
 
 ```sh
-rsync -a --exclude client --exclude '__pycache__' pihub/ som@piscreen.local:/home/som/pihub/
-ssh som@piscreen.local 'sudo cp ~/pihub/deploy/pihub*.service ~/pihub/deploy/pihub-sync.timer /etc/systemd/system/ \
-  && sudo systemctl daemon-reload && sudo systemctl enable --now pihub pihub-sync.timer && sudo systemctl restart pihub'
+rsync -a --exclude __pycache__ --exclude 'test_*.py' pihub/ som@piscreen.local:/home/som/pihub/
+ssh som@piscreen.local 'sudo systemctl restart pihub'
 ```
 
-## Set up a Linux PC (Arch)
+PiHub serves the client files and join scripts below, so `client/`, `setup/` and `join/` must be on the Pi too.
 
-```sh
-# 1. Syncthing
-sudo pacman -S syncthing
-systemctl --user enable --now syncthing
+## Add a PC (one command)
 
-# 2. pihub-client files + config (~/.config/pihub/client.json: device, hub_url, token, allowed_roots)
-mkdir -p ~/.local/share/pihub
-cp pihub/client/{pihub_client,pihub_mcp,report_event}.py ~/.local/share/pihub/
+On any PC on the same Wi-Fi as the Pi. It installs Python and Syncthing if missing, sets up
+pihub-client (runs at login, plus the 4-day fallback), pairs Syncthing with the Pi through
+`/api/pair` (no ssh), adds the Claude Code hooks and PiHub tools, and a **Pi Agents** app.
 
-# 3. run it now and at every login, plus the 4-day fallback timer
-cp pihub/client/linux/pihub-* ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now pihub-client.service pihub-sync-fallback.timer
+* **Linux:** `curl -fsSL http://192.168.1.13:8899/join/linux.sh -o join-pi.sh && bash join-pi.sh`
+* **Windows (PowerShell):** `irm http://192.168.1.13:8899/join/windows.ps1 | iex`
 
-# 4. pair Syncthing with the Pi (asks for the Pi password only if your ssh key isn't set up)
-python3 pihub/setup/pair_syncthing.py
+The Pi names each PC after its user (`soumil`, then `soumil-2`, `soumil-3`), remembered by
+machine ID, so running the script again keeps the name. To choose a name instead:
+`bash join-pi.sh my-laptop`, or on Windows `$env:PIHUB_DEVICE = "my-pc"` first.
 
-# 5. give your agents the tools
-claude mcp add pihub -s user -- python3 ~/.local/share/pihub/pihub_mcp.py
-```
-
-Agent monitor hooks for Claude Code go in `~/.claude/settings.json` (see the top-level homelab notes).
-
-## Set up a Windows PC
-
-1. Install Python 3 (tick "Add python.exe to PATH") and Syncthing.
-2. In PowerShell, from `pihub\client\windows`:
-   `powershell -ExecutionPolicy Bypass -File install.ps1 -Device win-pc -Token <PIHUB_TOKEN>`
-3. `py ..\..\setup\pair_syncthing.py`
+The scripts are served with the token filled in, and `/join/*` needs no token, so anyone on the
+LAN can fetch the token. That's accepted here because the Pi's firewall only allows the home LAN.
 
 ## Safety rules
 

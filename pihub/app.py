@@ -8,6 +8,8 @@
   is relayed through /srv/nas/inbox when the source PC is online; otherwise the
   last synced copy is served.
 * Agent monitor: coding-agent hooks post small events; /agents shows sessions.
+* Join: /join/linux.sh and /join/windows.ps1 set up a new PC in one run; it
+  pairs Syncthing through /api/pair, so no ssh login to the Pi is needed.
 
 PCs never get pushed to: they poll /api/tasks. Stdlib only.
 """
@@ -15,12 +17,15 @@ import contextlib
 import hmac
 import json
 import os
+import re
 import shutil
 import sqlite3
 import threading
 import time
 import traceback
+import urllib.error
 import urllib.parse
+import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -35,6 +40,9 @@ SYNC_INTERVAL_DAYS = float(os.environ.get("SYNC_INTERVAL_DAYS", "4"))
 INDEX_INTERVAL = int(os.environ.get("INDEX_INTERVAL", "300"))
 ONLINE_SECONDS = int(os.environ.get("ONLINE_SECONDS", "90"))   # a PC that polled this recently is "on"
 HERE = os.path.dirname(os.path.abspath(__file__))
+PUBLIC_URL = os.environ.get("PIHUB_PUBLIC_URL", "http://192.168.1.13:8899")
+ST_URL = os.environ.get("PIHUB_ST_URL", "http://127.0.0.1:8384")
+ST_CONFIG = os.environ.get("PIHUB_ST_CONFIG", os.path.expanduser("~/.local/state/syncthing/config.xml"))
 CHUNK = 1 << 16
 MAX_JSON = 64 * 1024
 
@@ -46,6 +54,25 @@ STATIC = {
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/fonts.css": ("fonts.css", "text/css; charset=utf-8"),
 }
+
+# Files a new PC downloads while joining. Served without the token (the Pi only
+# accepts LAN connections); join scripts get the token baked in when served.
+JOIN_FILES = {
+    "pihub_client.py": "client/pihub_client.py",
+    "pihub_mcp.py": "client/pihub_mcp.py",
+    "report_event.py": "client/report_event.py",
+    "pair_syncthing.py": "setup/pair_syncthing.py",
+    "pihub-client.service": "client/linux/pihub-client.service",
+    "pihub-sync-fallback.service": "client/linux/pihub-sync-fallback.service",
+    "pihub-sync-fallback.timer": "client/linux/pihub-sync-fallback.timer",
+    "favicon.svg": "favicon.svg",
+}
+JOIN_SCRIPTS = {"linux.sh": "join/linux.sh", "windows.ps1": "join/windows.ps1"}
+
+# Folders a PC may share, and where the Pi keeps each one.
+PAIR_FOLDERS = ("Documents", "Desktop", "Pictures", "Videos", "Downloads", "Music")
+DEVICE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+ST_ID_RE = re.compile(r"^[A-Z0-9]{7}(-[A-Z0-9]{7}){7}$")
 
 
 class ClientError(Exception):
@@ -96,6 +123,32 @@ def init_db():
                 event TEXT, tool TEXT, summary TEXT, cwd TEXT, ts REAL);
             CREATE INDEX IF NOT EXISTS events_session ON events(device, agent, session, ts);
         """)
+        if "machine" not in [r[1] for r in c.execute("PRAGMA table_info(devices)")]:
+            c.execute("ALTER TABLE devices ADD COLUMN machine TEXT")  # set by /api/register
+
+
+def register_device(body):
+    """Name a new PC after its user: soumil, then soumil-2, soumil-3 for the next PCs.
+
+    The machine ID (Linux /etc/machine-id, Windows MachineGuid) makes it stable:
+    running the join script again on the same PC gets the same name back.
+    """
+    machine = str(body.get("machine") or "").strip().lower()
+    if not re.match(r"^[a-z0-9-]{8,64}$", machine):
+        raise ClientError("machine must be the PC's machine ID.")
+    base = re.sub(r"[^a-z0-9]+", "-", str(body.get("user") or "").lower()).strip("-")[:28] or "pc"
+    with db() as c:
+        row = c.execute("SELECT name FROM devices WHERE machine = ?", (machine,)).fetchone()
+        if row:
+            return {"device": row[0], "new": False}
+        taken = {r[0] for r in c.execute("SELECT name FROM devices")}
+        taken |= set(os.listdir(DEVICES_DIR)) if os.path.isdir(DEVICES_DIR) else set()
+        name, n = base, 1
+        while name in taken:
+            n += 1
+            name = "%s-%d" % (base, n)
+        c.execute("INSERT INTO devices(name, last_seen, machine) VALUES (?, ?, ?)", (name, now(), machine))
+    return {"device": name, "new": True}
 
 
 def touch_device(name):
@@ -337,6 +390,64 @@ def agent_sessions():
     return out
 
 
+def pair_device(body):
+    """Add a PC and its folders to the Pi's Syncthing (Receive Only, versioned).
+
+    The PC sends its Syncthing ID, its device name and which standard folders it
+    has; the Pi decides every path itself, so a PC can't point a share elsewhere.
+    """
+    device, pc_id = body.get("device") or "", body.get("pc_id") or ""
+    if not DEVICE_RE.match(device):
+        raise ClientError("Device name must be lowercase letters, digits and dashes (max 32).")
+    if not ST_ID_RE.match(pc_id):
+        raise ClientError("That isn't a Syncthing device ID.")
+    wanted = body.get("folders") or []
+    if not isinstance(wanted, list):
+        raise ClientError("folders must be a list.")
+    folders = []
+    for name in wanted:
+        if name in PAIR_FOLDERS:
+            folders.append((device + "-" + name.lower(), "%s %s" % (device, name), os.path.join(DEVICES_DIR, device, name)))
+        elif name == "OmaOpus":
+            folders.append(("music-omaopus", "OmaOpus music", os.path.join(NAS, "music", "omaopus")))
+        else:
+            raise ClientError("Unknown folder %r." % name)
+    try:
+        with open(ST_CONFIG, encoding="utf-8") as f:
+            key = re.search(r"<apikey>([^<]+)</apikey>", f.read()).group(1)
+    except (OSError, AttributeError):
+        raise ClientError("Syncthing on the Pi isn't set up (no API key in %s)." % ST_CONFIG, 503)
+
+    def st(method, path, payload=None):
+        req = urllib.request.Request(ST_URL + path, method=method,
+                                     data=json.dumps(payload).encode() if payload is not None else None,
+                                     headers={"X-API-Key": key, "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            raw = r.read()
+            return json.loads(raw) if raw.strip() else {}
+
+    try:
+        me = st("GET", "/rest/system/status")["myID"]
+        st("PUT", "/rest/config/devices/" + pc_id, {"deviceID": pc_id, "name": device, "addresses": ["dynamic"]})
+        for fid, label, path in folders:
+            os.makedirs(path, exist_ok=True)
+            # Keep devices already on a shared folder (OmaOpus can come from several PCs).
+            try:
+                devs = st("GET", "/rest/config/folders/" + fid).get("devices", [])
+            except urllib.error.HTTPError:
+                devs = []
+            ids = {d["deviceID"] for d in devs} | {me, pc_id}
+            st("PUT", "/rest/config/folders/" + fid, {
+                "id": fid, "label": label, "path": path, "type": "receiveonly",
+                "devices": [{"deviceID": i} for i in sorted(ids)],
+                "versioning": {"type": "staggered", "params": {"maxAge": "2592000", "cleanInterval": "3600"}},
+                "rescanIntervalS": 3600, "fsWatcherEnabled": False})
+    except (urllib.error.URLError, OSError) as e:
+        raise ClientError("Couldn't talk to Syncthing on the Pi: %s" % e, 502)
+    touch_device(device)
+    return {"pi_id": me, "folders": [[fid, label] for fid, label, _ in folders]}
+
+
 def overview():
     with db() as c:
         devs = [dict(r) for r in c.execute("SELECT * FROM devices ORDER BY name")]
@@ -449,6 +560,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ClientError("not found", 404)
             with open(fp, "rb") as f:
                 return self._send(200, "font/woff2", f.read(), {"Cache-Control": "public, max-age=31536000"})
+        if path.startswith("/join/"):
+            return self._join(path[len("/join/"):])
         if path == "/api/overview":
             return self._json(200, overview())
         if path == "/api/devices":
@@ -490,6 +603,10 @@ class Handler(BaseHTTPRequestHandler):
                                                 b.get("dst_device"), b.get("dst_path")))
         if path.startswith("/api/tasks/"):
             return self._json(200, update_task(path.rsplit("/", 1)[1], self._body_json()))
+        if path == "/api/register":
+            return self._json(200, register_device(self._body_json()))
+        if path == "/api/pair":
+            return self._json(200, pair_device(self._body_json()))
         if path == "/api/agent-events":
             add_event(self._body_json())
             return self._json(200, {"ok": True})
@@ -528,6 +645,18 @@ class Handler(BaseHTTPRequestHandler):
             c.execute("UPDATE tasks SET status='ready', note=?, updated=? WHERE id=?",
                       ("Received the current file from %s." % t["src_device"], now(), t["id"]))
         self._json(200, task(t["id"]))
+
+    def _join(self, name):
+        if name in JOIN_SCRIPTS:
+            with open(os.path.join(HERE, JOIN_SCRIPTS[name]), encoding="utf-8") as f:
+                text = f.read().replace("__PIHUB_URL__", PUBLIC_URL).replace("__PIHUB_TOKEN__", TOKEN)
+            if name.endswith(".ps1"):
+                text = text.replace("\r\n", "\n").replace("\n", "\r\n")
+            return self._send(200, "text/plain; charset=utf-8", text.encode("utf-8"))
+        if name in JOIN_FILES:
+            with open(os.path.join(HERE, JOIN_FILES[name]), "rb") as f:
+                return self._send(200, "text/plain; charset=utf-8", f.read())
+        raise ClientError("not found", 404)
 
     def _file(self, fp):
         if not os.path.isfile(fp):

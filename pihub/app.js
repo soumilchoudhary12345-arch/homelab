@@ -3,6 +3,13 @@
 var $ = function (id) { return document.getElementById(id); };
 var token = "";
 try { token = localStorage.getItem("pihub.token") || ""; } catch (e) {}
+// Desktop launchers open /agents#token=...; keep it, then drop it from the address bar.
+var hashToken = /^#token=(.+)$/.exec(location.hash);
+if (hashToken) {
+  token = decodeURIComponent(hashToken[1]);
+  try { localStorage.setItem("pihub.token", token); } catch (e) {}
+  history.replaceState(null, "", location.pathname);
+}
 var tab = location.pathname === "/agents" ? "agents" : "overview";
 var timer = null;
 

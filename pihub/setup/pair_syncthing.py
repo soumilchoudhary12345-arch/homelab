@@ -1,45 +1,40 @@
 #!/usr/bin/env python3
 """Pair this PC's Syncthing with the Pi and set up the folders PiHub syncs.
 
-Run once on each PC after Syncthing is installed and running:
+Run once on each PC after Syncthing is installed and running (the join scripts
+do this for you):
     python3 pair_syncthing.py            (Linux)
     py pair_syncthing.py                 (Windows)
 
 What it does:
+  * the Pi (through PiHub's /api/pair, using the token in the client config):
+    adds this PC and its folders as Receive Only into /srv/nas/devices/<device>/,
+    with Staggered versioning so a deletion on the PC never destroys the Pi's copy
   * this PC: adds the Pi as a device (paused; PiHub wakes it every 4 days) and
-    shares each folder below as Send Only
-  * the Pi (over ssh): adds this PC and the same folders as Receive Only into
-    /srv/nas/devices/<device>/..., with Staggered versioning so a deletion on
-    the PC never destroys the Pi's copy
+    shares each folder as Send Only
   * writes this PC's Syncthing API key into the pihub-client config
 """
 import json
 import os
 import re
-import shlex
-import subprocess
 import sys
+import urllib.error
 import urllib.request
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "client"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path[:0] = [HERE, os.path.join(HERE, "..", "client")]  # installed next to pihub_client.py, or in the repo
 from pihub_client import config_path, load_config  # noqa: E402
 
-PI_SSH = os.environ.get("PI_SSH", "som@piscreen.local")
 PI_ADDR = os.environ.get("PI_ADDR", "tcp://192.168.1.13:22000")
 ST = "http://127.0.0.1:8384"
 
 
-def folders(device):
+def folders():
+    """(name the Pi knows, local path) for each standard folder this PC has."""
     home = os.path.expanduser("~")
-    music = os.path.join(home, "Music", "OmaOpus")
-    out = []
-    for name in ("Documents", "Desktop", "Pictures", "Videos"):
-        p = os.path.join(home, name)
-        if os.path.isdir(p):
-            out.append((device + "-" + name.lower(), "%s %s" % (device, name), p, "/srv/nas/devices/%s/%s" % (device, name)))
-    if os.path.isdir(music):
-        out.append(("music-omaopus", "OmaOpus music", music, "/srv/nas/music/omaopus"))
-    return out
+    out = [(n, os.path.join(home, n)) for n in ("Documents", "Desktop", "Pictures", "Videos")]
+    out.append(("OmaOpus", os.path.join(home, "Music", "OmaOpus")))
+    return [(n, p) for n, p in out if os.path.isdir(p)]
 
 
 def st_config_file():
@@ -60,24 +55,20 @@ def st(method, path, key, body=None):
         return json.loads(raw) if raw.strip() else {}
 
 
-PI_SIDE = r'''
-import json, re, sys, urllib.request
-a = json.loads(sys.stdin.read())
-key = re.search(r"<apikey>([^<]+)</apikey>", open("/home/som/.local/state/syncthing/config.xml").read()).group(1)
-def st(m, p, b=None):
-    r = urllib.request.Request("http://127.0.0.1:8384" + p, method=m, data=json.dumps(b).encode() if b is not None else None,
-                               headers={"X-API-Key": key, "Content-Type": "application/json"})
-    return urllib.request.urlopen(r, timeout=15).read()
-me = json.loads(st("GET", "/rest/system/status"))["myID"]
-st("PUT", "/rest/config/devices/" + a["pc_id"], {"deviceID": a["pc_id"], "name": a["device"], "addresses": ["dynamic"]})
-for fid, label, pi_path in a["folders"]:
-    st("PUT", "/rest/config/folders/" + fid, {
-        "id": fid, "label": label, "path": pi_path, "type": "receiveonly",
-        "devices": [{"deviceID": me}, {"deviceID": a["pc_id"]}],
-        "versioning": {"type": "staggered", "params": {"maxAge": "2592000", "cleanInterval": "3600"}},
-        "rescanIntervalS": 3600, "fsWatcherEnabled": False})
-print(me)
-'''
+def hub(cfg, path, body):
+    req = urllib.request.Request(cfg["hub_url"] + path, method="POST", data=json.dumps(body).encode(),
+                                 headers={"X-Token": cfg["token"], "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error")
+        except ValueError:
+            msg = None
+        raise SystemExit("PiHub said %s: %s" % (e.code, msg or e.reason))
+    except urllib.error.URLError as e:
+        raise SystemExit("Can't reach PiHub at %s (%s). Same Wi-Fi as the Pi?" % (cfg["hub_url"], e.reason))
 
 
 def main():
@@ -85,21 +76,17 @@ def main():
     device = cfg["device"]
     key = re.search(r"<apikey>([^<]+)</apikey>", open(st_config_file(), encoding="utf-8").read()).group(1)
     my_id = st("GET", "/rest/system/status", key)["myID"]
-    fl = folders(device)
+    fl = folders()
     print("This PC (%s) is %s" % (device, my_id))
-    print("Folders to sync:", ", ".join(f[2] for f in fl))
+    print("Folders to sync:", ", ".join(p for _, p in fl) or "none found")
 
-    payload = json.dumps({"pc_id": my_id, "device": device, "folders": [(f[0], f[1], f[3]) for f in fl]})
-    # ssh joins its arguments into one remote shell command, so quote the script as a single word.
-    r = subprocess.run(["ssh", PI_SSH, "python3 -c " + shlex.quote(PI_SIDE)], input=payload.encode(), capture_output=True)
-    if r.returncode != 0:
-        raise SystemExit("Pi side failed:\n" + r.stderr.decode())
-    pi_id = r.stdout.decode().strip().splitlines()[-1]
+    r = hub(cfg, "/api/pair", {"pc_id": my_id, "device": device, "folders": [n for n, _ in fl]})
+    pi_id = r["pi_id"]
     print("Pi is", pi_id)
 
     st("PUT", "/rest/config/devices/" + pi_id, key,
        {"deviceID": pi_id, "name": "pi (picloud)", "addresses": [PI_ADDR, "dynamic"], "paused": True})
-    for fid, label, path, _ in fl:
+    for (fid, label), (_, path) in zip(r["folders"], fl):
         st("PUT", "/rest/config/folders/" + fid, key, {
             "id": fid, "label": label, "path": path, "type": "sendonly",
             "devices": [{"deviceID": my_id}, {"deviceID": pi_id}],
