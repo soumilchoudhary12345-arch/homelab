@@ -10,10 +10,24 @@ block the agent.
 """
 import json
 import os
+import re
 import sys
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Commands can carry secrets (tokens in headers, passwords piped to sudo...).
+# Mask them before anything leaves the laptop.
+_SECRET_PATTERNS = [
+    re.compile(r"(?i)((?:x-token|x-api-key|authorization|api[_-]?key|token|password|passwd|secret|bearer)[\"']?\s*[:=]?\s*[\"']?"
+               r"(?:(?:bearer|basic)\s+)?)([^\s\"']+)"),
+    re.compile(r"\b[A-Za-z0-9_\-]{24,}\b"),   # long random-looking strings (keys, tokens)
+]
+
+
+def redact(text):
+    text = _SECRET_PATTERNS[0].sub(lambda m: m.group(1) + "•••", text)
+    return _SECRET_PATTERNS[1].sub("•••", text)
 
 
 def summarize(tool, ti):
@@ -25,7 +39,7 @@ def summarize(tool, ti):
             v = " ".join(v.split())
             if key == "file_path" or key == "path":
                 v = os.path.basename(v.rstrip("/")) or v
-            return v[:120]
+            return redact(v)[:120]
     return None
 
 
@@ -39,7 +53,7 @@ def main():
         tool = data.get("tool_name")
         summary = summarize(tool, data.get("tool_input"))
         if event == "Notification":
-            summary = (data.get("message") or "Needs your attention")[:120]
+            summary = redact(data.get("message") or "Needs your attention")[:120]
         body = {"device": cfg["device"], "agent": agent, "session": (data.get("session_id") or "")[:80],
                 "event": event, "tool": tool, "summary": summary,
                 "cwd": os.path.basename((data.get("cwd") or "").rstrip("/"))}
