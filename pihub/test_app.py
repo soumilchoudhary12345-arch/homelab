@@ -144,6 +144,7 @@ class Join(unittest.TestCase):
         for name in app.JOIN_SCRIPTS.values():
             text = open(os.path.join(app.HERE, name), encoding="utf-8").read()
             self.assertIn("__PIHUB_URL__", text)
-            self.assertIn("__PIHUB_TOKEN__", text)
+            if not name.endswith(".cmd"):  # the launcher only fetches the real scripts; no token in it
+                self.assertIn("__PIHUB_TOKEN__", text)
         for name in app.JOIN_FILES.values():
             self.assertTrue(os.path.isfile(os.path.join(app.HERE, name)), name)

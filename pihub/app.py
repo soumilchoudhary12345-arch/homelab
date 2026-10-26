@@ -67,7 +67,7 @@ JOIN_FILES = {
     "pihub-sync-fallback.timer": "client/linux/pihub-sync-fallback.timer",
     "favicon.svg": "favicon.svg",
 }
-JOIN_SCRIPTS = {"linux.sh": "join/linux.sh", "windows.ps1": "join/windows.ps1"}
+JOIN_SCRIPTS = {"linux.sh": "join/linux.sh", "windows.ps1": "join/windows.ps1", "join-pi.cmd": "join/join-pi.cmd"}
 
 # Folders a PC may share, and where the Pi keeps each one.
 PAIR_FOLDERS = ("Documents", "Desktop", "Pictures", "Videos", "Downloads", "Music")

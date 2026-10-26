@@ -31,6 +31,9 @@ pihub-client (runs at login, plus the 4-day fallback), pairs Syncthing with the 
 
 * **Linux:** `curl -fsSL http://192.168.1.13:8899/join/linux.sh -o join-pi.sh && bash join-pi.sh`
 * **Windows (PowerShell):** `irm http://192.168.1.13:8899/join/windows.ps1 | iex`
+* **Either, one file:** `join-pi.cmd` (from `http://192.168.1.13:8899/join/join-pi.cmd`, or picloud's
+  `cloud` folder). Windows: double-click it. Linux: `bash join-pi.cmd`. It's a batch/bash polyglot:
+  cmd skips the `:;` lines as labels; bash runs them and exits before the Windows part. Keep it LF-only.
 
 The Pi names each PC after its user (`soumil`, then `soumil-2`, `soumil-3`), remembered by
 machine ID, so running the script again keeps the name. To choose a name instead:
