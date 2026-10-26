@@ -15,6 +15,9 @@ var view = "songs", drill = null, query = "";
 var queue = [], orig = null, qi = -1, shuffle = false, repeat = "off";
 var shown = [];      // song ids currently listed, used when a row is played
 var loaded = false;
+// ?pi=1: the Pi's 3.5" resistive touchscreen, where a tap is the only input
+var PI = /[?&]pi=1(&|$)/.test(location.search);
+if (PI) document.body.classList.add("pi");
 
 // ---------- helpers ----------
 function esc(s) {
@@ -187,15 +190,31 @@ function render() {
     }
   }
   listEl.innerHTML = h;
+  paintPager();
 }
+
+// ---------- Pi pager: page buttons instead of scrolling ----------
+var ROW = 52; // keep in sync with the body.pi row height in style.css
+function pageSize() { return Math.max(ROW, Math.floor(listWrap.clientHeight / ROW) * ROW); }
+function paintPager() {
+  if (!PI) return;
+  var size = pageSize();
+  var total = 1 + Math.ceil(Math.max(0, listWrap.scrollHeight - listWrap.clientHeight - 2) / size);
+  var atEnd = listWrap.scrollTop + listWrap.clientHeight >= listWrap.scrollHeight - 2;
+  var cur = atEnd ? total : Math.min(total - 1, Math.round(listWrap.scrollTop / size) + 1);
+  $("pgNum").textContent = cur + "/" + total;
+  $("pgUp").disabled = listWrap.scrollTop <= 0;
+  $("pgDown").disabled = atEnd;
+}
+function page(dir) { listWrap.scrollTop += dir * pageSize(); paintPager(); }
 
 function setView(v) {
   view = v; drill = null;
   document.querySelectorAll("#tabs button").forEach(function (b) {
     b.setAttribute("aria-pressed", String(b.dataset.view === v));
   });
-  render();
   listWrap.scrollTop = 0;
+  render();
 }
 
 // ---------- playback ----------
@@ -367,7 +386,8 @@ function setPlayingUI(on) {
 function openStage() {
   if (document.body.classList.contains("stage-open")) return;
   document.body.classList.add("stage-open");
-  history.pushState({ stage: true }, "");
+  // On the Pi, keep history at one entry so the Close button's window.close() is allowed
+  if (!PI) history.pushState({ stage: true }, "");
 }
 function closeStage(fromHistory) {
   if (!document.body.classList.contains("stage-open")) return;
@@ -386,7 +406,7 @@ listEl.addEventListener("click", function (e) {
     if (b.dataset.ctx === "queue") { qi = i; load(true); }
     else playList(shown, i);
   } else if (act === "fav") toggleFav(b.dataset.id);
-  else if (act === "open") { drill = b.dataset.name; render(); listWrap.scrollTop = 0; }
+  else if (act === "open") { drill = b.dataset.name; listWrap.scrollTop = 0; render(); }
   else if (act === "back") { drill = null; render(); }
   else if (act === "playall") { if (shown.length) playList(shown, 0); }
   else if (act === "reload") fetchLibrary();
@@ -486,6 +506,14 @@ document.addEventListener("keydown", function (e) {
 window.addEventListener("pagehide", save);
 
 // ---------- start ----------
+if (PI) {
+  $("pager").hidden = $("quit").hidden = false;
+  $("pgUp").addEventListener("click", function () { page(-1); });
+  $("pgDown").addEventListener("click", function () { page(1); });
+  $("quit").addEventListener("click", function () { save(); window.close(); });
+  listWrap.addEventListener("scroll", paintPager);
+  if (window.ResizeObserver) new ResizeObserver(paintPager).observe(listWrap);
+}
 stage.classList.add("idle");
 $("prev").disabled = $("next").disabled = true;
 $("art").classList.add("empty-art");
