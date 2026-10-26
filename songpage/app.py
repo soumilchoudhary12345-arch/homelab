@@ -5,6 +5,7 @@ Scans MUSIC_ROOT into SQLite, serves a library API, and streams any track with
 real HTTP Range support (206 Partial Content), so the browser streams and seeks
 instead of downloading whole files. Stdlib only.
 """
+import contextlib
 import hashlib
 import json
 import mimetypes
@@ -14,6 +15,7 @@ import sqlite3
 import struct
 import threading
 import time
+import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -26,6 +28,7 @@ PORT = int(os.environ.get("PLAYER_PORT") or os.environ.get("PORT") or "8080")
 BIND = os.environ.get("PLAYER_BIND", "0.0.0.0")
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "600"))
 CHUNK = 1 << 16
+MAX_BODY = 4096
 
 AUDIO_TYPES = {
     ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac",
@@ -217,15 +220,26 @@ def describe(path):
 
 # ---------- library ----------
 
+@contextlib.contextmanager
 def db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    """One short-lived connection: commits on success, rolls back on error, always closes.
+
+    (sqlite3's own `with conn:` only commits; it never closes the connection.)
+    """
     c = sqlite3.connect(DB_PATH, timeout=10)
     c.row_factory = sqlite3.Row
-    return c
+    try:
+        with c:
+            yield c
+    finally:
+        c.close()
 
 
 def init_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with db() as c:
+        # WAL lets the page read the library while a scan is writing to it.
+        c.execute("PRAGMA journal_mode=WAL")
         c.executescript("""
             CREATE TABLE IF NOT EXISTS tracks (
                 id TEXT PRIMARY KEY, path TEXT UNIQUE NOT NULL,
@@ -301,6 +315,23 @@ def track_path(tid):
 
 # ---------- http ----------
 
+def parse_range(header, size):
+    """'bytes=a-b' -> (start, end) inclusive, None for no/invalid range, or 'bad'."""
+    if not header or not header.startswith("bytes="):
+        return None
+    a, _, b = header[6:].split(",")[0].strip().partition("-")
+    try:
+        if a == "":
+            start, end = max(0, size - int(b)), size - 1
+        else:
+            start, end = int(a), (int(b) if b else size - 1)
+    except ValueError:
+        return None
+    if start >= size or start > end:
+        return "bad"
+    return start, min(end, size - 1)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "musik/2.0"
     protocol_version = "HTTP/1.1"
@@ -349,31 +380,16 @@ class Handler(BaseHTTPRequestHandler):
     def _stream(self, path):
         size = os.path.getsize(path)
         ctype = AUDIO_TYPES.get(os.path.splitext(path)[1].lower(), "application/octet-stream")
-        rng = self.headers.get("Range")
-        start, end = 0, size - 1
-        partial = False
-        if rng and rng.startswith("bytes="):
-            spec = rng[6:].split(",")[0].strip()
-            a, _, b = spec.partition("-")
-            try:
-                if a == "" and b != "":
-                    start = max(0, size - int(b))
-                else:
-                    start = int(a)
-                    if b != "":
-                        end = int(b)
-            except ValueError:
-                start, end = 0, size - 1
-            if start >= size or start > end:
-                self.send_response(416)
-                self.send_header("Content-Range", "bytes */%d" % size)
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                return
-            end = min(end, size - 1)
-            partial = True
+        rng = parse_range(self.headers.get("Range"), size)
+        if rng == "bad":
+            self.send_response(416)
+            self.send_header("Content-Range", "bytes */%d" % size)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        start, end = rng or (0, size - 1)
         length = end - start + 1
-        if partial:
+        if rng:
             self.send_response(206)
             self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
         else:
@@ -411,7 +427,30 @@ class Handler(BaseHTTPRequestHandler):
         mime, img = cover
         self._small(200, mime, img, {"Cache-Control": "public, max-age=86400"})
 
+    def _guard(self, route):
+        """Run a route; any unexpected error becomes a 500 instead of a dropped connection."""
+        try:
+            route()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception:
+            traceback.print_exc()
+            self.close_connection = True
+            try:
+                self._json(500, {"error": "Musik hit an error. Check `journalctl -u songpage`."})
+            except OSError:
+                pass
+
     def do_GET(self):
+        self._guard(self._get)
+
+    def do_HEAD(self):
+        self._guard(self._get)
+
+    def do_POST(self):
+        self._guard(self._post)
+
+    def _get(self):
         p = urllib.parse.urlparse(self.path).path
         if p in STATIC:
             name, ctype = STATIC[p]
@@ -431,18 +470,26 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._not_found()
 
-    do_HEAD = do_GET
-
-    def do_POST(self):
+    def _post(self):
         p = urllib.parse.urlparse(self.path).path
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if 0 < length <= 4096 else b""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if not 0 <= length <= MAX_BODY:
+            # The body stays unread, so this keep-alive connection can't be reused.
+            self.close_connection = True
+            return self._json(413, {"error": "Request body must be under %d bytes." % MAX_BODY})
+        raw = self.rfile.read(length) if length else b""
         if p.startswith("/api/fav/"):
             tid = p[9:]
             try:
-                fav = bool(json.loads(raw or b"{}").get("fav"))
+                body = json.loads(raw or b"{}")
             except ValueError:
-                return self._json(400, {"error": "body must be JSON like {\"fav\": true}"})
+                body = None
+            if not isinstance(body, dict):
+                return self._json(400, {"error": "Body must be JSON like {\"fav\": true}."})
+            fav = bool(body.get("fav"))
             with db() as c:
                 if not c.execute("SELECT 1 FROM tracks WHERE id = ?", (tid,)).fetchone():
                     return self._json(404, {"error": "no such track"})
