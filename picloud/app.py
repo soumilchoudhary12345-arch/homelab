@@ -2,190 +2,105 @@
 """picloud - a tiny, dependency-free web file cloud.
 
 Serves a single-page UI over the files in CLOUD_ROOT so you can upload from
-one device and download from another on the same network.
+one device and download from another on the same network. Stdlib only.
 """
 import json
 import mimetypes
 import os
 import shutil
+import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-ROOT = os.path.abspath(os.environ.get("CLOUD_ROOT", "/home/soumil/cloud"))
+ROOT = os.path.realpath(os.environ.get("CLOUD_ROOT", "/home/soumil/cloud"))
 PORT = int(os.environ.get("CLOUD_PORT", "80"))
 BIND = os.environ.get("CLOUD_BIND", "0.0.0.0")
 HERE = os.path.dirname(os.path.abspath(__file__))
+CHUNK = 1 << 16
+PART = ".part"
 os.makedirs(ROOT, exist_ok=True)
+
+STATIC = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/fonts.css": ("fonts.css", "text/css; charset=utf-8"),
+    "/favicon.svg": ("favicon.svg", "image/svg+xml"),
+}
+
+
+class ClientError(Exception):
+    """A request problem the user can fix; becomes a 4xx with this message."""
+
+    def __init__(self, msg, code=400):
+        super().__init__(msg)
+        self.code = code
 
 
 def safe_path(rel):
+    """Resolve rel inside ROOT, following symlinks, or raise ClientError."""
     rel = (rel or "").replace("\\", "/").strip().lstrip("/")
-    p = os.path.abspath(os.path.join(ROOT, rel))
+    p = os.path.realpath(os.path.join(ROOT, rel))
     if p != ROOT and not p.startswith(ROOT + os.sep):
-        raise ValueError("path escapes root")
+        raise ClientError("That path is outside the cloud folder.")
     return p
+
+
+def check_name(name):
+    name = (name or "").strip()
+    if not name or name in (".", "..") or "/" in name or "\\" in name:
+        raise ClientError("Names can't be empty or contain slashes.")
+    if name.endswith(PART):
+        raise ClientError("Names can't end in %s." % PART)
+    return name
 
 
 def list_dir(rel):
     d = safe_path(rel)
     if not os.path.isdir(d):
-        raise ValueError("not a directory")
+        raise ClientError("That folder doesn't exist.", 404)
     entries = []
     with os.scandir(d) as it:
         for e in it:
+            if e.name.endswith(PART):  # unfinished upload
+                continue
             try:
                 st = e.stat()
+                is_dir = e.is_dir()
             except OSError:
                 continue
             entries.append({
                 "name": e.name,
-                "dir": e.is_dir(),
-                "size": 0 if e.is_dir() else st.st_size,
+                "dir": is_dir,
+                "size": 0 if is_dir else st.st_size,
                 "mtime": int(st.st_mtime),
             })
     entries.sort(key=lambda x: (not x["dir"], x["name"].lower()))
     return entries
 
 
-PAGE = r"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#0f172a">
-<title>picloud</title>
-<link rel="stylesheet" href="/style.css">
-</head>
-<body>
-<header class="topbar">
-  <div class="brand"><span class="dot"></span> picloud</div>
-  <div class="actions">
-    <button id="pickFiles" class="btn">Upload files</button>
-    <button id="pickFolder" class="btn ghost">Upload folder</button>
-    <button id="newFolder" class="btn ghost">New folder</button>
-  </div>
-</header>
-<input type="file" id="fileInput" multiple hidden>
-<input type="file" id="folderInput" webkitdirectory hidden>
-<main>
-  <nav id="crumbs" class="crumbs"></nav>
-  <div id="drop" class="drop">
-    <div class="drop-big">Drop files here</div>
-    <div class="drop-sm">or click to choose files</div>
-  </div>
-  <div id="list" class="list"></div>
-</main>
-<div id="toast" class="toast"></div>
-<script>
-var cwd = "";
-function $(s){ return document.querySelector(s); }
-function esc(s){ return String(s).replace(/[&<>"']/g, function(c){
-  return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]; }); }
-function toast(msg){
-  var t = $("#toast"); t.textContent = msg; t.classList.add("show");
-  clearTimeout(t._t); t._t = setTimeout(function(){ t.classList.remove("show"); }, 2600);
-}
-function fmtSize(n){
-  if(!n) return "0 B";
-  var u=["B","KB","MB","GB","TB"], i=0, f=n;
-  while(f>=1024 && i<u.length-1){ f/=1024; i++; }
-  return (i? f.toFixed(1): f)+" "+u[i];
-}
-function fmtDate(s){
-  try{ return new Date(s*1000).toLocaleString(); }catch(e){ return ""; }
-}
-function load(path){
-  cwd = path || "";
-  fetch("/api/list?path="+encodeURIComponent(cwd)).then(function(r){ return r.json(); })
-  .then(function(d){
-    if(d.error){ toast(d.error); return; }
-    renderCrumbs(cwd); renderList(d.entries);
-  });
-}
-function renderCrumbs(path){
-  var parts = path ? path.split("/") : [], acc = "";
-  var h = '<a data-path="" href="#">home</a>';
-  for(var i=0;i<parts.length;i++){
-    acc = acc ? acc+"/"+parts[i] : parts[i];
-    h += ' <span class="sep">/</span> <a data-path="'+esc(acc)+'" href="#">'+esc(parts[i])+'</a>';
-  }
-  var c = $("#crumbs"); c.innerHTML = h;
-  c.querySelectorAll("a").forEach(function(a){
-    a.onclick = function(e){ e.preventDefault(); load(a.dataset.path); };
-  });
-}
-function renderList(entries){
-  var el = $("#list");
-  if(!entries.length){ el.innerHTML = '<div class="empty">This folder is empty.</div>'; return; }
-  var h = "";
-  entries.forEach(function(e){
-    var p = cwd ? cwd+"/"+e.name : e.name;
-    var icon = e.dir ? "\uD83D\uDCC1" : "\uD83D\uDCC4";
-    var nameCell = e.dir
-      ? '<a class="name" data-dir="'+esc(p)+'" href="#">'+icon+' <span>'+esc(e.name)+'</span></a>'
-      : '<a class="name" href="/download?path='+encodeURIComponent(p)+'">'+icon+' <span>'+esc(e.name)+'</span></a>';
-    h += '<div class="row">'+nameCell
-      + '<div class="meta">'+(e.dir? "folder" : fmtSize(e.size))+' &middot; '+fmtDate(e.mtime)+'</div>'
-      + '<button class="del" data-del="'+esc(p)+'" title="Delete">&#10005;</button></div>';
-  });
-  el.innerHTML = h;
-  el.querySelectorAll("[data-dir]").forEach(function(a){
-    a.onclick = function(ev){ ev.preventDefault(); load(a.dataset.dir); };
-  });
-  el.querySelectorAll("[data-del]").forEach(function(b){
-    b.onclick = function(){
-      var p = b.dataset.del;
-      if(!confirm("Delete \""+p+"\" ?")) return;
-      fetch("/delete?path="+encodeURIComponent(p), {method:"POST"})
-        .then(function(r){ return r.json(); })
-        .then(function(d){ if(d.error) toast(d.error); load(cwd); });
-    };
-  });
-}
-function uploadFiles(files){
-  var arr = Array.prototype.slice.call(files);
-  if(!arr.length) return;
-  var done = 0;
-  function next(i){
-    if(i >= arr.length){ toast("Uploaded "+done+" file(s)"); load(cwd); return; }
-    var f = arr[i];
-    var rel = (cwd ? cwd+"/" : "") + (f.webkitRelativePath || f.name);
-    fetch("/upload?path="+encodeURIComponent(rel), {method:"POST", body:f})
-      .then(function(){ done++; toast("Uploading "+(i+1)+"/"+arr.length); next(i+1); })
-      .catch(function(){ toast("Failed: "+f.name); next(i+1); });
-  }
-  next(0);
-}
-$("#pickFiles").onclick = function(){ $("#fileInput").click(); };
-$("#pickFolder").onclick = function(){ $("#folderInput").click(); };
-$("#fileInput").onchange = function(e){ uploadFiles(e.target.files); e.target.value=""; };
-$("#folderInput").onchange = function(e){ uploadFiles(e.target.files); e.target.value=""; };
-$("#newFolder").onclick = function(){
-  var n = prompt("New folder name:");
-  if(!n) return;
-  var p = cwd ? cwd+"/"+n : n;
-  fetch("/mkdir?path="+encodeURIComponent(p), {method:"POST"})
-    .then(function(r){ return r.json(); })
-    .then(function(d){ if(d.error) toast(d.error); load(cwd); });
-};
-var drop = $("#drop");
-drop.onclick = function(){ $("#fileInput").click(); };
-["dragenter","dragover"].forEach(function(ev){
-  drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.add("over"); });
-});
-["dragleave","drop"].forEach(function(ev){
-  drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.remove("over"); });
-});
-drop.addEventListener("drop", function(e){ uploadFiles(e.dataTransfer.files); });
-load("");
-</script>
-</body>
-</html>
-"""
+def parse_range(header, size):
+    """'bytes=a-b' -> (start, end) inclusive, None for no/invalid range, or 'bad'."""
+    if not header or not header.startswith("bytes="):
+        return None
+    a, _, b = header[6:].split(",")[0].strip().partition("-")
+    try:
+        if a == "":
+            start, end = max(0, size - int(b)), size - 1
+        else:
+            start, end = int(a), (int(b) if b else size - 1)
+    except ValueError:
+        return None
+    if start >= size or start > end:
+        return "bad"
+    return start, min(end, size - 1)
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "picloud/1.0"
+    server_version = "picloud/2.0"
+
+    # ---------- responses ----------
 
     def _send(self, code, ctype, body, extra=None):
         if isinstance(body, str):
@@ -194,9 +109,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        if extra:
-            for k, v in extra.items():
-                self.send_header(k, v)
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -209,90 +123,162 @@ class Handler(BaseHTTPRequestHandler):
     def _err(self, code, msg):
         self._json(code, {"error": msg})
 
+    def _run(self, fn, *args):
+        """Call a route; turn exceptions into clean JSON errors."""
+        try:
+            fn(*args)
+        except ClientError as e:
+            self._err(e.code, str(e))
+        except FileNotFoundError:
+            self._err(404, "That file or folder no longer exists.")
+        except PermissionError:
+            self._err(403, "The Pi isn't allowed to touch that file.")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception:
+            traceback.print_exc()
+            self._err(500, "Something went wrong on the Pi. Check `journalctl -u picloud`.")
+
+    # ---------- GET ----------
+
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
-        if u.path in ("/", "/index.html"):
-            self._send(200, "text/html; charset=utf-8", PAGE)
-        elif u.path == "/style.css":
-            try:
-                with open(os.path.join(HERE, "style.css"), "rb") as f:
-                    self._send(200, "text/css; charset=utf-8", f.read())
-            except OSError:
-                self._send(200, "text/css; charset=utf-8", b"")
+        arg = lambda k: q.get(k, [""])[0]
+        if u.path in STATIC:
+            name, ctype = STATIC[u.path]
+            self._run(self._static, os.path.join(HERE, name), ctype)
+        elif u.path.startswith("/fonts/") and u.path.endswith(".woff2"):
+            name = os.path.basename(urllib.parse.unquote(u.path))
+            self._run(self._static, os.path.join(HERE, "fonts", name), "font/woff2")
         elif u.path == "/api/list":
-            try:
-                rel = q.get("path", [""])[0]
-                self._json(200, {"path": rel, "entries": list_dir(rel)})
-            except Exception as e:
-                self._err(400, str(e))
+            self._run(lambda: self._json(200, {"path": arg("path"), "entries": list_dir(arg("path"))}))
+        elif u.path == "/api/usage":
+            self._run(self._usage)
         elif u.path == "/download":
-            self._download(q.get("path", [""])[0])
+            self._run(self._download, arg("path"), arg("inline") == "1")
         else:
             self._err(404, "not found")
 
-    def _download(self, rel):
-        try:
-            fp = safe_path(rel)
-            if not os.path.isfile(fp):
-                self._err(404, "not found")
-                return
-            size = os.path.getsize(fp)
-            name = os.path.basename(fp).replace('"', "").replace("\\", "")
-            ctype = mimetypes.guess_type(fp)[0] or "application/octet-stream"
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(size))
-            self.send_header("Content-Disposition", 'attachment; filename="%s"' % name)
+    def _static(self, path, ctype):
+        if not os.path.isfile(path):
+            raise ClientError("not found", 404)
+        with open(path, "rb") as f:
+            self._send(200, ctype, f.read(), {"Cache-Control": "no-cache"})
+
+    def _usage(self):
+        du = shutil.disk_usage(ROOT)
+        self._json(200, {"total": du.total, "used": du.used, "free": du.free})
+
+    def _download(self, rel, inline):
+        fp = safe_path(rel)
+        if not os.path.isfile(fp):
+            raise ClientError("That file doesn't exist.", 404)
+        size = os.path.getsize(fp)
+        name = os.path.basename(fp)
+        ctype = mimetypes.guess_type(fp)[0] or "application/octet-stream"
+        if inline and ctype.startswith("text/"):
+            ctype += "; charset=utf-8"
+        rng = parse_range(self.headers.get("Range"), size)
+        if rng == "bad":
+            self.send_response(416)
+            self.send_header("Content-Range", "bytes */%d" % size)
+            self.send_header("Content-Length", "0")
             self.end_headers()
-            with open(fp, "rb") as f:
-                shutil.copyfileobj(f, self.wfile, 1 << 16)
-        except BrokenPipeError:
-            pass
-        except Exception as e:
-            self._err(400, str(e))
+            return
+        start, end = rng or (0, size - 1)
+        length = max(0, end - start + 1)
+        self.send_response(206 if rng else 200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        if rng:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+        disp = "inline" if inline else "attachment"
+        self.send_header("Content-Disposition", "%s; filename*=UTF-8''%s" % (disp, urllib.parse.quote(name)))
+        self.end_headers()
+        with open(fp, "rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(CHUNK, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+
+    # ---------- POST ----------
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
-        length = int(self.headers.get("Content-Length") or 0)
-        try:
-            if u.path == "/upload":
-                self._upload(q.get("path", [""])[0], length)
-            elif u.path == "/mkdir":
-                os.makedirs(safe_path(q.get("path", [""])[0]), exist_ok=True)
-                self._json(200, {"ok": True})
-            elif u.path == "/delete":
-                fp = safe_path(q.get("path", [""])[0])
-                if fp == ROOT:
-                    self._err(400, "cannot delete root")
-                    return
-                if os.path.isdir(fp):
-                    shutil.rmtree(fp)
-                elif os.path.exists(fp):
-                    os.remove(fp)
-                self._json(200, {"ok": True})
-            else:
-                self._err(404, "not found")
-        except Exception as e:
-            self._err(400, str(e))
+        arg = lambda k: q.get(k, [""])[0]
+        routes = {
+            "/upload": lambda: self._upload(arg("path")),
+            "/mkdir": lambda: self._mkdir(arg("path")),
+            "/delete": lambda: self._delete(arg("path")),
+            "/rename": lambda: self._rename(arg("path"), arg("to")),
+        }
+        if u.path in routes:
+            self._run(routes[u.path])
+        else:
+            self._err(404, "not found")
 
-    def _upload(self, rel, length):
+    def _upload(self, rel):
+        if self.headers.get("Content-Length") is None:
+            raise ClientError("Upload is missing its size (Content-Length).", 411)
+        length = int(self.headers["Content-Length"])
         fp = safe_path(rel)
-        parent = os.path.dirname(fp)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp = fp + ".part"
-        remaining = length
-        with open(tmp, "wb") as f:
-            while remaining > 0:
-                chunk = self.rfile.read(min(1 << 16, remaining))
-                if not chunk:
-                    break
-                f.write(chunk)
-                remaining -= len(chunk)
-        os.replace(tmp, fp)
+        if fp == ROOT or os.path.isdir(fp):
+            raise ClientError("A folder with that name already exists.", 409)
+        check_name(os.path.basename(fp))
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        tmp = fp + PART
+        try:
+            remaining = length
+            with open(tmp, "wb") as f:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(CHUNK, remaining))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    remaining -= len(chunk)
+            if remaining:
+                raise ClientError("The upload stopped before it finished. Try again.")
+            os.replace(tmp, fp)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
         self._json(200, {"ok": True, "path": rel, "bytes": length})
+
+    def _mkdir(self, rel):
+        fp = safe_path(rel)
+        check_name(os.path.basename(fp))
+        if os.path.exists(fp):
+            raise ClientError("Something with that name is already here.", 409)
+        os.makedirs(fp)
+        self._json(200, {"ok": True})
+
+    def _delete(self, rel):
+        fp = safe_path(rel)
+        if fp == ROOT:
+            raise ClientError("The cloud folder itself can't be deleted.")
+        if os.path.isdir(fp) and not os.path.islink(fp):
+            shutil.rmtree(fp)
+        else:
+            os.remove(fp)
+        self._json(200, {"ok": True})
+
+    def _rename(self, rel, new_name):
+        fp = safe_path(rel)
+        if fp == ROOT:
+            raise ClientError("The cloud folder itself can't be renamed.")
+        dst = os.path.join(os.path.dirname(fp), check_name(new_name))
+        safe_path(os.path.relpath(dst, ROOT))
+        if os.path.exists(dst):
+            raise ClientError("Something with that name is already here.", 409)
+        os.rename(fp, dst)
+        self._json(200, {"ok": True})
 
     def log_message(self, *a):
         pass
