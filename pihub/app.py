@@ -40,6 +40,17 @@ SYNC_INTERVAL_DAYS = float(os.environ.get("SYNC_INTERVAL_DAYS", "4"))
 INDEX_INTERVAL = int(os.environ.get("INDEX_INTERVAL", "300"))
 ONLINE_SECONDS = int(os.environ.get("ONLINE_SECONDS", "90"))   # a PC that polled this recently is "on"
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))  # repo root in the pinest layout (hub/app.py)
+
+
+def find(*names):
+    """A file next to app.py (the Pi's flat layout), or under the repo root (pinest: hub/, agents/, ...)."""
+    for base in (HERE, ROOT):
+        for n in names:
+            p = os.path.join(base, n)
+            if os.path.isfile(p):
+                return p
+    return os.path.join(HERE, names[0])
 PUBLIC_URL = os.environ.get("PIHUB_PUBLIC_URL", "http://192.168.1.13:8899")
 ST_URL = os.environ.get("PIHUB_ST_URL", "http://127.0.0.1:8384")
 ST_CONFIG = os.environ.get("PIHUB_ST_CONFIG", os.path.expanduser("~/.local/state/syncthing/config.xml"))
@@ -53,25 +64,28 @@ STATIC = {
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/fonts.css": ("fonts.css", "text/css; charset=utf-8"),
-    "/pi": ("pi.html", "text/html; charset=utf-8"),   # Agents app for the Pi's touchscreen
-    "/pi.js": ("pi.js", "text/javascript; charset=utf-8"),
-    "/pi.css": ("pi.css", "text/css; charset=utf-8"),
+    "/pi": (("pi.html", "agents/pi.html"), "text/html; charset=utf-8"),   # Agents app for the Pi's touchscreen
+    "/pi.js": (("pi.js", "agents/pi.js"), "text/javascript; charset=utf-8"),
+    "/pi.css": (("pi.css", "agents/pi.css"), "text/css; charset=utf-8"),
 }
 
 # Files a new PC downloads while joining. Served without the token (the Pi only
 # accepts LAN connections); join scripts get the token baked in when served.
+# Each entry: (Pi's flat layout, pinest repo layout).
 JOIN_FILES = {
-    "pihub_client.py": "client/pihub_client.py",
-    "pihub_mcp.py": "client/pihub_mcp.py",
-    "report_event.py": "client/report_event.py",
-    "connect_agents.py": "client/connect_agents.py",
-    "pair_syncthing.py": "setup/pair_syncthing.py",
-    "pihub-client.service": "client/linux/pihub-client.service",
-    "pihub-sync-fallback.service": "client/linux/pihub-sync-fallback.service",
-    "pihub-sync-fallback.timer": "client/linux/pihub-sync-fallback.timer",
-    "favicon.svg": "favicon.svg",
+    "pihub_client.py": ("client/pihub_client.py", "client/pihub_client.py"),
+    "pihub_mcp.py": ("client/pihub_mcp.py", "client/pihub_mcp.py"),
+    "report_event.py": ("client/report_event.py", "agents/report_event.py"),
+    "connect_agents.py": ("client/connect_agents.py", "agents/connect_agents.py"),
+    "pair_syncthing.py": ("setup/pair_syncthing.py", "client/pair_syncthing.py"),
+    "pihub-client.service": ("client/linux/pihub-client.service", "client/linux/pihub-client.service"),
+    "pihub-sync-fallback.service": ("client/linux/pihub-sync-fallback.service", "client/linux/pihub-sync-fallback.service"),
+    "pihub-sync-fallback.timer": ("client/linux/pihub-sync-fallback.timer", "client/linux/pihub-sync-fallback.timer"),
+    "favicon.svg": ("favicon.svg", "hub/favicon.svg"),
 }
-JOIN_SCRIPTS = {"linux.sh": "join/linux.sh", "windows.ps1": "join/windows.ps1", "join-pi.cmd": "join/join-pi.cmd"}
+JOIN_SCRIPTS = {"linux.sh": ("join/linux.sh", "dependencies/linux.sh"),
+                "windows.ps1": ("join/windows.ps1", "dependencies/windows.ps1"),
+                "join-pi.cmd": ("join/join-pi.cmd", "dependencies/join-pi.cmd")}
 
 # Folders a PC may share, and where the Pi keeps each one.
 PAIR_FOLDERS = ("Documents", "Desktop", "Pictures", "Videos", "Downloads", "Music")
@@ -661,7 +675,7 @@ class Handler(BaseHTTPRequestHandler):
     def _get(self, path, q):
         if path in STATIC:
             name, ctype = STATIC[path]
-            with open(os.path.join(HERE, name), "rb") as f:
+            with open(find(*name) if isinstance(name, tuple) else os.path.join(HERE, name), "rb") as f:
                 return self._send(200, ctype, f.read(), {"Cache-Control": "no-cache"})
         if path.startswith("/fonts/") and path.endswith(".woff2"):
             fp = os.path.join(HERE, "fonts", os.path.basename(path))
@@ -757,13 +771,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _join(self, name):
         if name in JOIN_SCRIPTS:
-            with open(os.path.join(HERE, JOIN_SCRIPTS[name]), encoding="utf-8") as f:
+            with open(find(*JOIN_SCRIPTS[name]), encoding="utf-8") as f:
                 text = f.read().replace("__PIHUB_URL__", PUBLIC_URL).replace("__PIHUB_TOKEN__", TOKEN)
             if name.endswith(".ps1"):
                 text = text.replace("\r\n", "\n").replace("\n", "\r\n")
             return self._send(200, "text/plain; charset=utf-8", text.encode("utf-8"))
         if name in JOIN_FILES:
-            with open(os.path.join(HERE, JOIN_FILES[name]), "rb") as f:
+            with open(find(*JOIN_FILES[name]), "rb") as f:
                 return self._send(200, "text/plain; charset=utf-8", f.read())
         raise ClientError("not found", 404)
 

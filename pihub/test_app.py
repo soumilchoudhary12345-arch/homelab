@@ -149,13 +149,16 @@ class Join(unittest.TestCase):
                 app.pair_device(body)
 
     def test_join_script_placeholders_exist(self):
-        for name in app.JOIN_SCRIPTS.values():
-            text = open(os.path.join(app.HERE, name), encoding="utf-8").read()
-            self.assertIn("__PIHUB_URL__", text)
-            if not name.endswith(".cmd"):  # the launcher only fetches the real scripts; no token in it
+        for key, names in app.JOIN_SCRIPTS.items():
+            text = open(app.find(*names), encoding="utf-8").read()
+            if key.endswith(".cmd"):  # runs straight from a clone: real default address, no token
+                self.assertIn("http://192.168.1.13:8899", text)
+                self.assertNotIn("__PIHUB_TOKEN__", text)
+            else:
+                self.assertIn("__PIHUB_URL__", text)
                 self.assertIn("__PIHUB_TOKEN__", text)
-        for name in app.JOIN_FILES.values():
-            self.assertTrue(os.path.isfile(os.path.join(app.HERE, name)), name)
+        for names in app.JOIN_FILES.values():
+            self.assertTrue(os.path.isfile(app.find(*names)), names)
 
 
 class Describe(unittest.TestCase):
