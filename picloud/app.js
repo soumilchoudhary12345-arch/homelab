@@ -8,6 +8,9 @@ var sort = { key: "name", dir: 1 };
 var filter = "";
 var editing = null;           // { kind: "new" | "rename" | "delete", name }
 var loadSeq = 0;
+// ?pi=1: the Pi's 3.5" resistive touchscreen, where a tap is the only input
+var PI = /[?&]pi=1(&|$)/.test(location.search);
+if (PI) document.body.classList.add("pi");
 
 // ---------- helpers ----------
 function esc(s) {
@@ -79,7 +82,10 @@ function pathFromHash() {
 function go(path) {
   var h = "#/" + path.split("/").map(encodeURIComponent).join("/");
   if (!path) h = "#/";
-  if (location.hash === h) load(); else location.hash = h;
+  if (location.hash === h) load();
+  // On the Pi, replace instead of push: one history entry keeps the Close button's window.close() allowed
+  else if (PI) location.replace(h);
+  else location.hash = h;
 }
 window.addEventListener("hashchange", load);
 
@@ -112,6 +118,7 @@ function loadUsage() {
     $("usage").classList.toggle("full", pct > 0.9);
     $("usageFill").style.width = (pct * 100).toFixed(1) + "%";
     $("usageText").textContent = fmtSize(u.free) + " free of " + fmtSize(u.total);
+    $("piUsage").textContent = fmtSize(u.free) + " free";
   }).catch(function () { $("usage").hidden = true; });
 }
 
@@ -129,6 +136,8 @@ function renderCrumbs() {
       : '<a href="#" data-go="' + esc(acc) + '" title="' + esc(p) + '">' + esc(p) + "</a>");
   });
   $("crumbs").innerHTML = h;
+  $("piTitle").textContent = parts.length ? parts[parts.length - 1] : "Home";
+  $("piBack").disabled = !parts.length;
   $("dropTarget").textContent = parts.length ? parts[parts.length - 1] : "Home";
   document.title = (parts.length ? parts[parts.length - 1] + " · " : "") + "picloud";
 }
@@ -141,7 +150,10 @@ function renderSkeleton() {
 
 function sorted() {
   var q = filter.trim().toLowerCase();
-  var list = entries.filter(function (e) { return !q || e.name.toLowerCase().indexOf(q) !== -1; });
+  var list = entries.filter(function (e) {
+    if (PI && e.name.charAt(0) === ".") return false;  // hide .stfolder and friends on the tap screen
+    return !q || e.name.toLowerCase().indexOf(q) !== -1;
+  });
   return list.sort(function (a, b) {
     if (a.dir !== b.dir) return a.dir ? -1 : 1;  // folders always first
     var x = a[sort.key], y = b[sort.key];
@@ -159,7 +171,7 @@ function nameCell(e) {
   if (e.dir) return '<a class="name is-dir" href="#" data-go="' + esc(path) + '">' + inner + "</a>";
   var viewable = VIEWABLE.test(e.name);
   var href = "/download?path=" + encodeURIComponent(path) + (viewable ? "&inline=1" : "");
-  return '<a class="name" href="' + href + '"' + (viewable ? ' target="_blank" rel="noopener"' : "") +
+  return '<a class="name" data-name="' + esc(e.name) + '" href="' + href + '"' + (viewable ? ' target="_blank" rel="noopener"' : "") +
     ' title="' + (viewable ? "Open " : "Download ") + esc(e.name) + '">' + inner + "</a>";
 }
 
@@ -208,6 +220,7 @@ function render() {
     h += list.map(rowHTML).join("");
   }
   rowsEl.innerHTML = h;
+  paintPager();
 
   var dirs = entries.filter(function (e) { return e.dir; }).length;
   var files = entries.length - dirs;
@@ -231,6 +244,49 @@ function render() {
     }
   }
 }
+
+// ---------- Pi: pager and file viewer ----------
+var scroller = document.querySelector(".table");
+var ROW = 52; // keep in sync with the body.pi row height in style.css
+function pageSize() { return Math.max(ROW, Math.floor(scroller.clientHeight / ROW) * ROW); }
+function paintPager() {
+  if (!PI) return;
+  var size = pageSize();
+  var total = 1 + Math.ceil(Math.max(0, scroller.scrollHeight - scroller.clientHeight - 2) / size);
+  var atEnd = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2;
+  var cur = atEnd ? total : Math.min(total - 1, Math.round(scroller.scrollTop / size) + 1);
+  $("pgNum").textContent = cur + "/" + total;
+  $("pgUp").disabled = scroller.scrollTop <= 0;
+  $("pgDown").disabled = atEnd;
+}
+function page(dir) { scroller.scrollTop += dir * pageSize(); paintPager(); }
+
+var viewing = null;
+function images() { return sorted().filter(function (e) { return kind(e) === "image"; }).map(function (e) { return e.name; }); }
+function openViewer(name) {
+  var e = entries.filter(function (x) { return x.name === name; })[0];
+  if (!e) return;
+  var k = kind(e), body = $("viewerBody");
+  var src = "/download?path=" + encodeURIComponent(join(cwd, name)) + "&inline=1";
+  if (!VIEWABLE.test(name)) return toast(name + " can’t be opened on this screen.", true);
+  if (k === "image") body.innerHTML = '<img alt="" src="' + esc(src) + '">';
+  else if (k === "audio" || k === "video") body.innerHTML = '<video controls autoplay src="' + esc(src) + '"></video>';
+  else body.innerHTML = '<iframe title="' + esc(name) + '" src="' + esc(src) + '"></iframe>';
+  viewing = name;
+  $("viewerName").textContent = name;
+  $("vPrev").hidden = $("vNext").hidden = k !== "image" || images().length < 2;
+  $("vScroll").hidden = !body.querySelector("iframe") || /\.pdf$/i.test(name);  // the PDF viewer scrolls itself
+  $("viewer").hidden = false;
+}
+function stepImage(d) {
+  var list = images(), i = list.indexOf(viewing);
+  if (list.length) openViewer(list[(i + d + list.length) % list.length]);
+}
+function scrollViewer(d) {
+  var f = $("viewerBody").querySelector("iframe");
+  try { f.contentWindow.scrollBy(0, d * (f.clientHeight - 40)); } catch (err) { /* not same-origin */ }
+}
+function closeViewer() { $("viewer").hidden = true; $("viewerBody").innerHTML = ""; viewing = null; }
 
 // ---------- actions ----------
 function post(url) { return api(url, { method: "POST" }); }
@@ -332,6 +388,8 @@ function hideTray() { if (uploading) return; $("tray").hidden = true; $("trayLis
 
 // ---------- events ----------
 document.addEventListener("click", function (e) {
+  var f = PI && e.target.closest("a.name[data-name]");
+  if (f) { e.preventDefault(); openViewer(f.dataset.name); return; }
   var g = e.target.closest("[data-go]");
   if (g) { e.preventDefault(); go(g.dataset.go); return; }
   var b = e.target.closest("[data-act]");
@@ -386,5 +444,21 @@ document.addEventListener("keydown", function (e) {
   if (e.key === "/") { e.preventDefault(); $("filter").focus(); }
   else if (e.key === "Backspace" && cwd) { e.preventDefault(); go(cwd.split("/").slice(0, -1).join("/")); }
 });
+
+if (PI) {
+  $("pibar").hidden = $("pager").hidden = false;
+  $("piBack").addEventListener("click", function () { if (cwd) go(cwd.split("/").slice(0, -1).join("/")); });
+  $("quit").addEventListener("click", function () { window.close(); });
+  $("pgUp").addEventListener("click", function () { page(-1); });
+  $("pgDown").addEventListener("click", function () { page(1); });
+  $("viewerClose").addEventListener("click", closeViewer);
+  $("vPrev").addEventListener("click", function () { stepImage(-1); });
+  $("vNext").addEventListener("click", function () { stepImage(1); });
+  $("vUp").addEventListener("click", function () { scrollViewer(-1); });
+  $("vDown").addEventListener("click", function () { scrollViewer(1); });
+  scroller.addEventListener("scroll", paintPager);
+  if (window.ResizeObserver) new ResizeObserver(paintPager).observe(scroller);
+  window.addEventListener("hashchange", function () { scroller.scrollTop = 0; closeViewer(); });
+}
 
 load();

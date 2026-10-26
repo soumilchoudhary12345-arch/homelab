@@ -30,6 +30,9 @@
     <symbol id="i-chev" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
     <symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M14.5 6 8.5 12l6 6"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="m6 14.5 6-6 6 6"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9.5 6 6 6-6"/></symbol>
     <symbol id="i-sort" viewBox="0 0 24 24"><path d="m8 10 4-4 4 4M8 14l4 4 4-4"/></symbol>
   </defs>
 </svg>
@@ -40,6 +43,14 @@
     <div class="usage-bar"><span id="usageFill"></span></div>
     <span id="usageText"></span>
   </div>
+</header>
+
+<!-- Pi touchscreen (?pi=1): a tap is the only input -->
+<header class="pibar" id="pibar" hidden>
+  <button class="icon-btn" id="piBack" type="button" aria-label="Up one folder"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg></button>
+  <span class="pi-title" id="piTitle">Home</span>
+  <span class="pi-usage" id="piUsage"></span>
+  <button class="icon-btn" id="quit" type="button" aria-label="Close picloud"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
 </header>
 
 <main class="shell">
@@ -76,6 +87,26 @@
   </div>
   <p class="summary" id="summary"></p>
 </main>
+
+<div class="pager" id="pager" hidden>
+  <button class="icon-btn" id="pgUp" type="button" aria-label="Previous page"><svg class="icon" aria-hidden="true"><use href="#i-up"/></svg></button>
+  <span class="pg-num" id="pgNum"></span>
+  <button class="icon-btn" id="pgDown" type="button" aria-label="Next page"><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg></button>
+</div>
+
+<section class="viewer" id="viewer" hidden aria-label="File viewer">
+  <header class="viewer-bar">
+    <span class="viewer-name" id="viewerName"></span>
+    <button class="icon-btn" id="viewerClose" type="button" aria-label="Close file"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </header>
+  <div class="viewer-body" id="viewerBody"></div>
+  <button class="icon-btn v-side v-prev" id="vPrev" type="button" aria-label="Previous photo" hidden><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg></button>
+  <button class="icon-btn v-side v-next" id="vNext" type="button" aria-label="Next photo" hidden><svg class="icon" aria-hidden="true"><use href="#i-chev"/></svg></button>
+  <div class="v-scroll" id="vScroll" hidden>
+    <button class="icon-btn" id="vUp" type="button" aria-label="Scroll up"><svg class="icon" aria-hidden="true"><use href="#i-up"/></svg></button>
+    <button class="icon-btn" id="vDown" type="button" aria-label="Scroll down"><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg></button>
+  </div>
+</section>
 
 <input type="file" id="fileInput" multiple hidden>
 <input type="file" id="folderInput" webkitdirectory hidden>
