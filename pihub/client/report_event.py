@@ -20,7 +20,8 @@ import re
 import sys
 import urllib.request
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_here = os.path.dirname(os.path.abspath(__file__))
+sys.path[:0] = [_here, os.path.join(_here, "..", "client")]  # installed next to pihub_client.py, or in the pinest repo
 
 # Commands can carry secrets (tokens in headers, passwords piped to sudo...).
 # Mask them before anything leaves the laptop.
