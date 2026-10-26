@@ -10,6 +10,7 @@ The homelab's coordinator on the Raspberry Pi (`piscreen`, 192.168.1.13, port **
 | `client/pihub_mcp.py` | each PC | MCP tools for agents: `list_devices`, `search_files`, `request_file`, `task_status`, `sync_now` |
 | `client/report_event.py` | each PC | Agent hook → `/agents` monitor (tool name + short summary only) |
 | `setup/pair_syncthing.py` | each PC, once | Pairs Syncthing with the Pi and creates the folders |
+| `pi.html` + `pi.js`/`pi.css` (`/pi`) | Pi touchscreen, `deploy/agents.desktop` | **Agents** app: tap a PC to see what its agents are doing, plus its live storage on the Pi; refreshes every 2 s |
 
 Storage: `/srv/nas` (`devices/<pc>/…` synced copies, `music/`, `inbox/` in-transit files, `pihub.db`).
 Token: `PIHUB_TOKEN` in `/etc/pihub.env` (root:som 640). Every `/api/*` call needs `X-Token`.
@@ -22,6 +23,13 @@ ssh som@piscreen.local 'sudo systemctl restart pihub'
 ```
 
 PiHub serves the client files and join scripts below, so `client/`, `setup/` and `join/` must be on the Pi too.
+
+## Agents app on the Pi's screen
+
+`deploy/agents.desktop` opens `/pi#token=…` in a Chromium kiosk. Install it on the Pi with the token
+filled in from `/etc/pihub.env` (never commit the token), plus `deploy/agents-icon.png` as
+`~/.local/share/icons/agents.png`. Storage numbers come live from the Pi's Syncthing, so a new PC
+and its upload show within seconds.
 
 ## Add a PC (one command)
 

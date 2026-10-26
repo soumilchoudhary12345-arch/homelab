@@ -53,6 +53,9 @@ STATIC = {
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/fonts.css": ("fonts.css", "text/css; charset=utf-8"),
+    "/pi": ("pi.html", "text/html; charset=utf-8"),   # Agents app for the Pi's touchscreen
+    "/pi.js": ("pi.js", "text/javascript; charset=utf-8"),
+    "/pi.css": ("pi.css", "text/css; charset=utf-8"),
 }
 
 # Files a new PC downloads while joining. Served without the token (the Pi only
@@ -367,6 +370,56 @@ def add_event(body):
                    s("summary", 200), s("cwd", 200), now()))
 
 
+AGENT_NAMES = {"claude-code": "Claude Code", "opencode": "OpenCode", "copilot": "Copilot CLI",
+               "antigravity": "Antigravity"}
+TOOL_PHRASES = {
+    "Read": "Reading {s}", "Edit": "Editing {s}", "MultiEdit": "Editing {s}", "Write": "Writing {s}",
+    "NotebookEdit": "Editing the notebook {s}", "Grep": "Searching the code for \u201c{s}\u201d",
+    "Glob": "Looking for files matching {s}", "WebSearch": "Searching the web for \u201c{s}\u201d",
+    "Agent": "Helper agent: {s}", "Task": "Helper agent: {s}", "Skill": "Using the {s} skill",
+}
+TOOL_ALONE = {"TodoWrite": "Updating its to-do list", "AskUserQuestion": "Asking you a question",
+              "ExitPlanMode": "Proposing a plan for you to approve", "EnterPlanMode": "Planning before it changes anything"}
+
+
+def describe(event, tool, summary, state, last=None):
+    """One plain sentence for what an agent is doing, built from its latest hook event.
+
+    `last` is the session's latest (tool, summary), so a finished or quiet agent
+    can still say what it did last instead of a generic "done".
+    """
+    s = (summary or "").strip()
+    if event == "Notification" and state != "ended":
+        return s or "Waiting for your answer."
+    if event in ("Stop", "SubagentStop", "SessionEnd") or state == "ended":
+        head = "Session ended." if state == "ended" else "Done."
+        if last and last[0]:
+            step = describe("PreToolUse", last[0], last[1], "running")
+            return "%s Last step: %s" % (head, step[:1].lower() + step[1:])
+        return head + " Waiting for your next message." if head == "Done." else head
+    if event == "SessionStart":
+        return "Just started a session."
+    tool = tool or ""
+    if tool in TOOL_ALONE:
+        doing = TOOL_ALONE[tool]
+    elif tool in TOOL_PHRASES and s:
+        doing = TOOL_PHRASES[tool].format(s=s)
+    elif tool == "WebFetch" and s:
+        doing = "Reading " + (urllib.parse.urlparse(s).hostname or s)
+    elif tool == "Bash":
+        doing = s or "Running a command"   # the hook sends the command's own description when it has one
+    elif tool.startswith("mcp__"):
+        parts = tool.split("__")
+        doing = "Using %s: %s" % (parts[1], parts[-1].replace("_", " ")) if len(parts) >= 3 else "Using " + tool
+    elif tool:
+        doing = "Using %s" % tool + (": " + s if s else "")
+    else:
+        doing = "Working"
+    if state == "idle":
+        return "Quiet for a while. Last step: " + doing[:1].lower() + doing[1:]
+    return doing
+
+
 def agent_sessions():
     """Latest event per session in the last 12 hours, with a plain-language state."""
     with db() as c:
@@ -375,6 +428,10 @@ def agent_sessions():
               SELECT device, agent, session, MAX(id) AS id, COUNT(*) AS n FROM events
               WHERE ts > ? GROUP BY device, agent, session) last ON e.id = last.id
             ORDER BY e.ts DESC""", (now() - 12 * 3600,)).fetchall()
+        lasts = {(r["device"], r["agent"], r["session"]): (r["tool"], r["summary"]) for r in c.execute("""
+            SELECT e.device, e.agent, e.session, e.tool, e.summary FROM events e JOIN (
+              SELECT MAX(id) AS id FROM events WHERE ts > ? AND tool IS NOT NULL
+              GROUP BY device, agent, session) last ON e.id = last.id""", (now() - 12 * 3600,))}
         counts = {(r["device"], r["agent"], r["session"]): r["n"] for r in c.execute(
             "SELECT device, agent, session, COUNT(*) AS n FROM events WHERE ts > ? GROUP BY device, agent, session",
             (now() - 12 * 3600,))}
@@ -391,9 +448,59 @@ def agent_sessions():
         else:
             state = "running"
         d = dict(r)
-        d.update(state=state, age=age, events=counts.get((r["device"], r["agent"], r["session"]), 0))
+        d.update(state=state, age=age, events=counts.get((r["device"], r["agent"], r["session"]), 0),
+                 agent_name=AGENT_NAMES.get(r["agent"], r["agent"]),
+                 doing=describe(ev, r["tool"], r["summary"], state, lasts.get((r["device"], r["agent"], r["session"]))))
         out.append(d)
     return out
+
+
+def syncthing(method, path, payload=None, timeout=15):
+    """Call the Pi's own Syncthing REST API."""
+    try:
+        with open(ST_CONFIG, encoding="utf-8") as f:
+            key = re.search(r"<apikey>([^<]+)</apikey>", f.read()).group(1)
+    except (OSError, AttributeError):
+        raise ClientError("Syncthing on the Pi isn't set up (no API key in %s)." % ST_CONFIG, 503)
+    req = urllib.request.Request(ST_URL + path, method=method,
+                                 data=json.dumps(payload).encode() if payload is not None else None,
+                                 headers={"X-API-Key": key, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        raw = r.read()
+        return json.loads(raw) if raw.strip() else {}
+
+
+_storage = {"t": 0.0, "data": {}}
+_storage_lock = threading.Lock()
+
+
+def live_storage():
+    """Per device: bytes already on the Pi, bytes the PC has, and whether it's uploading.
+
+    Read from the Pi's Syncthing, which keeps these numbers current while a sync
+    runs, so a new PC and its upload show up within seconds (the file index only
+    catches up every INDEX_INTERVAL). Cached for 2 s; {} if Syncthing is down.
+    """
+    with _storage_lock:
+        if now() - _storage["t"] < 2:
+            return _storage["data"]
+        out = {}
+        try:
+            prefix = DEVICES_DIR + os.sep
+            for f in syncthing("GET", "/rest/config/folders", timeout=3):
+                path = os.path.realpath(f.get("path") or "")
+                if not path.startswith(prefix):
+                    continue  # shared folders like music aren't one device's storage
+                device = path[len(prefix):].split(os.sep, 1)[0]
+                st = syncthing("GET", "/rest/db/status?folder=" + urllib.parse.quote(f["id"]), timeout=3)
+                d = out.setdefault(device, {"on_pi": 0, "total": 0, "syncing": False})
+                d["on_pi"] += st.get("localBytes", 0)
+                d["total"] += max(st.get("globalBytes", 0), st.get("localBytes", 0))
+                d["syncing"] = d["syncing"] or st.get("state") in ("syncing", "sync-preparing")
+        except Exception:
+            out = {}
+        _storage.update(t=now(), data=out)
+        return out
 
 
 def pair_device(body):
@@ -418,20 +525,7 @@ def pair_device(body):
             folders.append(("music-omaopus", "OmaOpus music", os.path.join(NAS, "music", "omaopus")))
         else:
             raise ClientError("Unknown folder %r." % name)
-    try:
-        with open(ST_CONFIG, encoding="utf-8") as f:
-            key = re.search(r"<apikey>([^<]+)</apikey>", f.read()).group(1)
-    except (OSError, AttributeError):
-        raise ClientError("Syncthing on the Pi isn't set up (no API key in %s)." % ST_CONFIG, 503)
-
-    def st(method, path, payload=None):
-        req = urllib.request.Request(ST_URL + path, method=method,
-                                     data=json.dumps(payload).encode() if payload is not None else None,
-                                     headers={"X-API-Key": key, "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=15) as r:
-            raw = r.read()
-            return json.loads(raw) if raw.strip() else {}
-
+    st = syncthing
     try:
         me = st("GET", "/rest/system/status")["myID"]
         st("PUT", "/rest/config/devices/" + pc_id, {"deviceID": pc_id, "name": device, "addresses": ["dynamic"]})
@@ -461,9 +555,15 @@ def overview():
             "SELECT device, COUNT(*) AS n, COALESCE(SUM(size),0) AS b FROM files GROUP BY device")}
         last_round = c.execute("SELECT MAX(created) AS t FROM rounds").fetchone()["t"]
         recent = [dict(r) for r in c.execute("SELECT * FROM tasks ORDER BY created DESC LIMIT 30")]
+    storage = live_storage()
     for d in devs:
         d["online"] = bool(d["last_seen"] and now() - d["last_seen"] < ONLINE_SECONDS)
         d["files"], d["bytes"] = counts.get(d["name"], (0, 0))
+        live = storage.get(d["name"])
+        if live:
+            d.update(on_pi=live["on_pi"], total=live["total"], syncing=live["syncing"])
+        else:
+            d.update(on_pi=d["bytes"], total=d["bytes"], syncing=False)
     du = shutil.disk_usage(NAS)
     return {"devices": devs, "tasks": recent, "last_round": last_round,
             "next_round": (last_round + SYNC_INTERVAL_DAYS * 86400) if last_round else None,

@@ -33,7 +33,10 @@ def redact(text):
 def summarize(tool, ti):
     if not isinstance(ti, dict):
         return None
-    for key in ("command", "file_path", "path", "pattern", "url", "query", "description", "skill"):
+    # Bash and helper-agent calls carry a plain-English "description"; prefer it over the raw command.
+    keys = ("description", "command") if tool in ("Bash", "Agent", "Task") else \
+        ("command", "file_path", "path", "pattern", "url", "query", "description", "skill")
+    for key in keys:
         v = ti.get(key)
         if isinstance(v, str) and v:
             v = " ".join(v.split())

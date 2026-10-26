@@ -156,3 +156,26 @@ class Join(unittest.TestCase):
                 self.assertIn("__PIHUB_TOKEN__", text)
         for name in app.JOIN_FILES.values():
             self.assertTrue(os.path.isfile(os.path.join(app.HERE, name)), name)
+
+
+class Describe(unittest.TestCase):
+    def test_tools_read_as_plain_sentences(self):
+        self.assertEqual(app.describe("PreToolUse", "Edit", "app.py", "running"), "Editing app.py")
+        self.assertEqual(app.describe("PreToolUse", "Bash", "Run the tests", "running"), "Run the tests")
+        self.assertEqual(app.describe("PreToolUse", "WebFetch", "https://syncthing.net/docs", "running"), "Reading syncthing.net")
+        self.assertEqual(app.describe("PreToolUse", "mcp__pihub__search_files", "", "running"), "Using pihub: search files")
+
+    def test_waiting_and_done(self):
+        self.assertEqual(app.describe("Notification", None, "Claude needs your permission", "waiting"), "Claude needs your permission")
+        self.assertEqual(app.describe("Stop", None, None, "idle", ("Write", "pi.js")), "Done. Last step: writing pi.js")
+        self.assertEqual(app.describe("Stop", None, None, "idle"), "Done. Waiting for your next message.")
+
+    def test_quiet_agent_says_its_last_step(self):
+        self.assertEqual(app.describe("PreToolUse", "Read", "README.md", "idle"), "Quiet for a while. Last step: reading README.md")
+
+    def test_sessions_carry_a_description(self):
+        reset()
+        for ev, tool, summ in (("SessionStart", None, None), ("PreToolUse", "Edit", "app.py"), ("Stop", None, None)):
+            app.add_event({"device": "soumil_linux", "agent": "claude-code", "session": "s1", "event": ev, "tool": tool, "summary": summ})
+        s = app.agent_sessions()[0]
+        self.assertEqual((s["agent_name"], s["doing"]), ("Claude Code", "Done. Last step: editing app.py"))
